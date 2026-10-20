@@ -1,0 +1,24 @@
+[workspace]
+members = [
+    "crates/ordet-format",
+    "crates/ordet-tui-framework",
+    "crates/ordet",
+]
+default-members = ["crates/ordet"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/LeonardoAmadeo/ordet"
+description = "Terminal-first word processor with rope-backed editing and a modern event-driven core"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+# Keep unwinding: the task pool catches worker panics so one failed background
+# job cannot take down an unsaved draft.
+panic = "unwind"
+strip = true

@@ -1,0 +1,10 @@
+[package]
+name = "ordet-format"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared .ord document load/save format for Ordet"
+
+[dependencies]
+regex = "1.12"
