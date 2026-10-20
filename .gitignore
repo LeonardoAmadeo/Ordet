@@ -1,0 +1,11 @@
+target/
+.DS_Store
+.aider*
+*.tmp
+.opencode/
+.mimocode/
+.claude/
+.cursor/
+.codex/
+.windsurf/
+.continue/

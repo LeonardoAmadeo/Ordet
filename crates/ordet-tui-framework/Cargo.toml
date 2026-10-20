@@ -1,0 +1,13 @@
+[package]
+name = "ordet-tui-framework"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Low-level TUI primitives, component trait, keymap, focus, task pool, and renderer for Ordet"
+
+[dependencies]
+crossterm = "0.28"
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
+crossbeam-channel = "0.5"

@@ -1,0 +1,73 @@
+ordet 0.1.0
+a quiet terminal word processor
+
+    ┌──────────────────────────────────────────────┐
+    │ one two three                                │
+    │                                              │
+    │ Insert │ Pg 1/1 │ L1 C14 │ W:3 C:13          │
+    └──────────────────────────────────────────────┘
+
+Ordet takes its name from Kaj Munk's play and Carl Theodor Dreyer's film.
+It is built in Rust on its own terminal UI framework, for writers,
+developers, terminal and Rust enthusiasts, and arthouse cinephiles.
+
+It gives you paragraph and character styles, a visible ruler, tiled
+windows, search and replace, block editing, bookmarks, autosave, crash
+recovery, revision history, backups, and a system clipboard bridge. Save
+as .ord or plain text. Every keystroke inserts exactly what was typed.
+Ordet makes no network requests.
+
+[ install ]
+
+Requires a stable Rust toolchain:
+
+    git clone https://github.com/LeonardoAmadeo/ordet.git
+    cd ordet
+    cargo install --path crates/ordet --locked
+
+[ use ]
+
+    ordet
+    ordet draft.ord notes.txt
+
+Use --config <path> for a different settings file, --print-config to print
+the effective settings, --reset-config to write defaults, and -h / -V for
+help and version information.
+
+[ keys ]
+
+F1 opens the shortcut guide. F2 opens settings. F10 opens the menu bar.
+Ctrl-Q quits. Ctrl-K and Ctrl-O are the two command prefixes, and the full
+reference lives in F1.
+
+Pages are drafts. Alt-N opens the next page in a split, F6 cycles pages and
+windows, and Alt-Up / Alt-Down reorder the page list. Panels are modal and
+close with Esc. Themes and every other preference live under F2.
+
+[ platforms ]
+
+- macOS: primary development platform, fully tested.
+- Linux: Ubuntu CI build and test; interactive X11/Wayland testing is
+  still pending.
+- Windows: experimental. Native CI builds and tests ordet.exe. Use Windows
+  Terminal or WezTerm with VT input. Interactive testing is still pending.
+
+[ project ]
+
+Architecture:  ARCHITECTURE.md
+Contributing:  CONTRIBUTING.md
+Security:      SECURITY.md
+Changelog:     CHANGELOG.md
+
+[ beta ]
+
+Ordet beta is ready for text, Markdown, and .ord writing workflows.
+Printing, mail merge, and macros are not implemented yet. The interface is
+English for this beta; translations are in progress.
+
+Keep backups during beta testing. Autosave, recovery, Trash, and revision
+restore are designed to protect work, but bug reports are welcome.
+
+[ license ]
+
+MIT OR Apache-2.0. Both license files are in the repository.
