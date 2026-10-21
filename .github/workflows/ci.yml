@@ -53,6 +53,33 @@ jobs:
       - run: cargo build --release -p ordet
       - run: .\target\release\ordet.exe --version
       - run: .\target\release\ordet.exe --print-config
+      - name: Windows terminal smoke test
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check pywinpty
+          @'
+          import sys
+          import time
+          from winpty import PtyProcess
+
+          proc = PtyProcess.spawn(
+              r"target\release\ordet.exe --config C:\ordet-smoke.json"
+          )
+          time.sleep(1)
+          proc.write("d")
+          time.sleep(0.3)
+          proc.write("\x1b")
+          proc.write("\x11")
+          time.sleep(1)
+          alive = proc.isalive()
+          try:
+              proc.close(force=True)
+          except Exception:
+              pass
+          if alive:
+              print("Ordet did not exit after Ctrl-Q", file=sys.stderr)
+              sys.exit(1)
+          '@ | python -
 
   macos:
     name: macOS build and tests
