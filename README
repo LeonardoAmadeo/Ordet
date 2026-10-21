@@ -1,3 +1,4 @@
+```markdown
 # Ordet
 
 > **A quiet terminal word processor.**  
@@ -36,3 +37,4 @@ The name comes from Kaj Munk's play and Carl Theodor Dreyer's film *Ordet* (Dani
 git clone https://github.com/LeonardoAmadeo/ordet.git
 cd ordet
 cargo install --path crates/ordet --locked
+```
