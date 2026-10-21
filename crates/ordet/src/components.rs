@@ -405,7 +405,7 @@ impl Component<AppState, Command, AppMessage, Action> for EditorPane {
                         .map(|text| text.split_whitespace().count())
                         .unwrap_or(0);
                     cx.emit(Action::SetStatus(format!(
-                        "Block marked, {chars} character(s), {words} word(s). ⌃K V copies it, ⌃K I writes it to a file."
+                        "Block marked, {chars} character(s), {words} word(s). Move the cursor to the destination, then ⌃K V copies or ⌃K M moves it. ⌃K I writes it to a file."
                     )));
                     return;
                 }

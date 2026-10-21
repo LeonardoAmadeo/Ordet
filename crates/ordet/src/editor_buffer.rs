@@ -1,5 +1,6 @@
 use ordet_format::escape_xml;
 use ropey::Rope;
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -45,7 +46,7 @@ struct UndoRecord {
 
 /// Inline style kind. Bold and italic live as independent dimensions so
 /// bold-italic overlap just works.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttrKind {
     Bold,
     Italic,
@@ -53,7 +54,7 @@ pub enum AttrKind {
 
 /// A styled char range. Same-kind spans never overlap (toggle normalizes);
 /// different kinds may cross freely.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttrSpan {
     pub start: usize,
     pub end: usize,
@@ -213,6 +214,10 @@ pub struct EditorBuffer {
     rope: Rope,
     cursor: usize,
     anchor: Option<usize>,
+    /// First endpoint of a marked block, kept separately from the cursor so
+    /// the destination can move before copy or move runs.
+    block_start: Option<usize>,
+    block: Option<(usize, usize)>,
     preferred_column: Option<usize>,
     paragraph_alignments: Vec<ParagraphAlignment>,
     /// Inline bold/italic ranges. Same-kind spans are kept sorted,
@@ -616,7 +621,7 @@ impl SearchOptions {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ParagraphAlignment {
     #[default]
     Left,
@@ -758,6 +763,14 @@ impl DraftSnapshot {
     pub(crate) fn to_ord_html(&self) -> String {
         ord_html_from(&self.rope, &self.alignments, &self.attrs)
     }
+
+    pub(crate) fn alignments(&self) -> &[ParagraphAlignment] {
+        &self.alignments
+    }
+
+    pub(crate) fn attrs(&self) -> &[AttrSpan] {
+        &self.attrs
+    }
 }
 
 impl EditorBuffer {
@@ -773,6 +786,8 @@ impl EditorBuffer {
             rope,
             cursor: 0,
             anchor: None,
+            block_start: None,
+            block: None,
             preferred_column: None,
             paragraph_alignments,
             attrs: Vec::new(),
@@ -901,6 +916,47 @@ impl EditorBuffer {
         Some(self.rope.slice(start..end).to_string())
     }
 
+    pub(crate) fn alignments(&self) -> &[ParagraphAlignment] {
+        &self.paragraph_alignments
+    }
+
+    pub(crate) fn attrs(&self) -> &[AttrSpan] {
+        &self.attrs
+    }
+
+    /// Replace every character and the rich formatting with a history
+    /// snapshot. The old state stays in one undo record.
+    pub(crate) fn replace_with_rich_text(
+        &mut self,
+        text: &str,
+        alignments: &[ParagraphAlignment],
+        attrs: &[AttrSpan],
+    ) -> bool {
+        if self.rope == text && self.paragraph_alignments == alignments && self.attrs == attrs {
+            return false;
+        }
+        self.begin_undo();
+        self.select_all();
+        self.delete_selection_if_any();
+        self.rope_insert(0, text);
+        let lines = self.rope.len_lines();
+        self.paragraph_alignments = alignments.to_vec();
+        self.paragraph_alignments
+            .resize(lines, ParagraphAlignment::Left);
+        self.paragraph_alignments.truncate(lines);
+        self.attrs = attrs.to_vec();
+        normalize_attr_spans(&mut self.attrs);
+        self.cursor = self.rope.len_chars();
+        self.anchor = None;
+        self.block_start = None;
+        self.block = None;
+        self.preferred_column = None;
+        self.mark_wrap_all_dirty();
+        self.ensure_alignment_capacity();
+        self.redo.clear();
+        true
+    }
+
     /// Drop the selection, keeping the cursor where it is.
     pub fn collapse_selection(&mut self) {
         self.anchor = None;
@@ -965,21 +1021,7 @@ impl EditorBuffer {
         self.begin_undo();
         self.delete_selection_if_any();
         let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-        let insertion_line = self.current_paragraph_index();
-        let inserted_newlines = normalized.chars().filter(|ch| *ch == '\n').count();
         self.rope_insert(self.cursor, &normalized);
-        if inserted_newlines > 0 {
-            let inherited = self
-                .paragraph_alignments
-                .get(insertion_line)
-                .copied()
-                .unwrap_or_default();
-            let index = insertion_line.saturating_add(1);
-            self.paragraph_alignments.splice(
-                index..index,
-                std::iter::repeat_n(inherited, inserted_newlines),
-            );
-        }
         self.cursor += normalized.chars().count();
         self.anchor = None;
         self.preferred_column = None;
@@ -1185,8 +1227,7 @@ impl EditorBuffer {
             .map(|line| {
                 self.rope
                     .line(line)
-                    .as_str()
-                    .unwrap_or("")
+                    .to_string()
                     .trim_end_matches(['\r', '\n'])
                     .to_string()
             })
@@ -1244,7 +1285,7 @@ impl EditorBuffer {
         let mut edits = Vec::new();
         for line in first_line..=last_line {
             let line_start = self.rope.line_to_char(line);
-            let line_text: String = self.rope.line(line).as_str().unwrap_or("").to_string();
+            let line_text: String = self.rope.line(line).to_string();
             if line_text.trim().is_empty() {
                 continue;
             }
@@ -1395,13 +1436,8 @@ impl EditorBuffer {
             self.cancel_undo();
             return false;
         }
-        let current_line = self.current_paragraph_index();
-        let removed_newline = self.cursor > 0 && self.rope.char(self.cursor - 1) == '\n';
         let start = self.prev_grapheme_start(self.cursor);
         self.rope_remove(start, self.cursor);
-        if removed_newline && current_line < self.paragraph_alignments.len() {
-            self.paragraph_alignments.remove(current_line);
-        }
         self.cursor = start;
         self.anchor = None;
         self.preferred_column = None;
@@ -1421,16 +1457,7 @@ impl EditorBuffer {
             self.cancel_undo();
             return false;
         }
-        let removed_newline =
-            self.cursor < self.rope.len_chars() && self.rope.char(self.cursor) == '\n';
-        let current_line = self.current_paragraph_index();
         self.rope_remove(self.cursor, end);
-        if removed_newline {
-            let next_line = current_line.saturating_add(1);
-            if next_line < self.paragraph_alignments.len() {
-                self.paragraph_alignments.remove(next_line);
-            }
-        }
         self.anchor = None;
         self.preferred_column = None;
         self.ensure_alignment_capacity();
@@ -1631,17 +1658,9 @@ impl EditorBuffer {
         if line_start == line_end && paragraph_idx > 0 {
             let prev_start = self.rope.line_to_char(paragraph_idx - 1);
             self.rope_remove(prev_start, line_end);
-            if paragraph_idx < self.paragraph_alignments.len() {
-                self.paragraph_alignments.remove(paragraph_idx);
-            }
             self.cursor = prev_start;
         } else {
             self.rope_remove(line_start, line_end);
-            if paragraph_idx < self.paragraph_alignments.len()
-                && self.paragraph_alignments.len() > 1
-            {
-                self.paragraph_alignments.remove(paragraph_idx);
-            }
             self.cursor = line_start.min(self.rope.len_chars());
         }
         self.anchor = None;
@@ -1678,16 +1697,7 @@ impl EditorBuffer {
 
     pub fn open_line(&mut self) -> bool {
         self.begin_undo();
-        let insertion_line = self.current_paragraph_index();
         self.rope_insert(self.cursor, "\n");
-        let inherited = self
-            .paragraph_alignments
-            .get(insertion_line)
-            .copied()
-            .unwrap_or_default();
-        let index = insertion_line.saturating_add(1);
-        self.paragraph_alignments
-            .splice(index..index, std::iter::once(inherited));
         self.anchor = None;
         self.preferred_column = None;
         self.ensure_alignment_capacity();
@@ -1719,44 +1729,76 @@ impl EditorBuffer {
     }
 
     pub fn set_block_begin(&mut self) {
+        self.block = None;
+        self.block_start = Some(self.cursor);
         self.anchor = Some(self.cursor);
     }
 
     pub fn set_block_end(&mut self) {
-        if self.anchor.is_none() {
+        if let Some(start) = self.block_start.take() {
+            self.block = Some((start.min(self.cursor), start.max(self.cursor)));
+            self.anchor = Some(start);
+        } else if self.anchor.is_none() {
             self.anchor = Some(0);
         }
     }
 
     pub fn hide_block(&mut self) {
         self.anchor = None;
+        self.block_start = None;
+        self.block = None;
+    }
+
+    pub fn marked_block(&self) -> Option<(usize, usize)> {
+        self.block.or_else(|| self.selection_range())
     }
 
     pub fn copy_block(&mut self) -> bool {
-        let Some(text) = self.selected_text() else {
+        let Some((start, end)) = self.marked_block() else {
             return false;
         };
-        self.insert_text(&text);
+        if start >= end {
+            return false;
+        }
+        let text = self.rope.slice(start..end).to_string();
+        let len = text.chars().count();
+        let destination = if self.cursor > start && self.cursor < end {
+            end
+        } else {
+            self.cursor
+        };
+        self.begin_undo();
+        self.rope_insert(destination, &text);
+        self.cursor = destination + len;
+        self.anchor = Some(destination);
+        self.preferred_column = None;
+        self.ensure_alignment_capacity();
+        self.redo.clear();
         true
     }
 
     pub fn move_block(&mut self) -> bool {
-        let Some((start, end)) = self.selection_range() else {
+        let Some((start, end)) = self.marked_block() else {
             return false;
         };
+        if start >= end || (self.cursor > start && self.cursor < end) {
+            return false;
+        }
         let text = self.rope.slice(start..end).to_string();
-        self.begin_undo();
-        self.rope_remove(start, end);
-        let insert_pos = if self.cursor >= end {
-            self.cursor - (end - start)
-        } else if self.cursor > start {
-            start
+        let len = text.chars().count();
+        let destination = if self.cursor >= end {
+            self.cursor - len
         } else {
             self.cursor
         };
-        self.rope_insert(insert_pos, &text);
-        self.cursor = insert_pos + text.chars().count();
-        self.anchor = None;
+        if destination == start {
+            return false;
+        }
+        self.begin_undo();
+        self.rope_remove(start, end);
+        self.rope_insert(destination, &text);
+        self.cursor = destination + len;
+        self.anchor = Some(destination);
         self.preferred_column = None;
         self.ensure_alignment_capacity();
         self.redo.clear();
@@ -1764,14 +1806,20 @@ impl EditorBuffer {
     }
 
     pub fn delete_block(&mut self) -> bool {
-        self.begin_undo();
-        if self.delete_selection_if_any() {
-            self.redo.clear();
-            true
-        } else {
-            self.cancel_undo();
-            false
+        let Some((start, end)) = self.marked_block() else {
+            return false;
+        };
+        if start >= end {
+            return false;
         }
+        self.begin_undo();
+        self.rope_remove(start, end);
+        self.cursor = start;
+        self.anchor = None;
+        self.preferred_column = None;
+        self.ensure_alignment_capacity();
+        self.redo.clear();
+        true
     }
 
     pub fn cursor_line_and_col(&self, width: usize) -> (usize, usize) {
@@ -2245,8 +2293,13 @@ impl EditorBuffer {
         let added_lines = text.chars().filter(|&c| c == '\n').count();
         self.rope.insert(char_idx, text);
         self.edit_seq = self.edit_seq.wrapping_add(1);
+        self.block_start = None;
+        self.block = None;
         if inserted_chars == 0 {
             return;
+        }
+        if added_lines > 0 {
+            self.insert_alignment_lines(first_line, added_lines);
         }
         shift_attrs_for_insert(&mut self.attrs, char_idx, inserted_chars);
         self.log_undo_op(UndoOp::Remove {
@@ -2295,11 +2348,17 @@ impl EditorBuffer {
         }
         let first_line = self.rope.char_to_line(start.min(self.rope.len_chars()));
         let last_line = self.rope.char_to_line(end.min(self.rope.len_chars()));
+        let start_at_line_start = start == self.rope.line_to_char(first_line);
         let removed_chars = end.saturating_sub(start);
         let removed_lines = last_line.saturating_sub(first_line);
         let removed_text = self.rope.slice(start..end).to_string();
         self.rope.remove(start..end);
         self.edit_seq = self.edit_seq.wrapping_add(1);
+        self.block_start = None;
+        self.block = None;
+        if removed_lines > 0 {
+            self.remove_alignment_lines(first_line, removed_lines, start_at_line_start);
+        }
         shift_attrs_for_delete(&mut self.attrs, start, end);
         self.log_undo_op(UndoOp::Insert {
             at: start,
@@ -2724,6 +2783,38 @@ impl EditorBuffer {
         }
 
         index
+    }
+
+    fn insert_alignment_lines(&mut self, first_line: usize, count: usize) {
+        if count == 0 {
+            return;
+        }
+        let inherited = self
+            .paragraph_alignments
+            .get(first_line)
+            .copied()
+            .unwrap_or_default();
+        let index = first_line
+            .saturating_add(1)
+            .min(self.paragraph_alignments.len());
+        self.paragraph_alignments
+            .splice(index..index, std::iter::repeat_n(inherited, count));
+    }
+
+    fn remove_alignment_lines(&mut self, first_line: usize, count: usize, at_line_start: bool) {
+        if count == 0 || self.paragraph_alignments.is_empty() {
+            return;
+        }
+        let start = if at_line_start {
+            first_line
+        } else {
+            first_line.saturating_add(1)
+        }
+        .min(self.paragraph_alignments.len());
+        let end = start
+            .saturating_add(count)
+            .min(self.paragraph_alignments.len());
+        self.paragraph_alignments.drain(start..end);
     }
 
     fn ensure_alignment_capacity(&mut self) {

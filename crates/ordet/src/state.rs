@@ -1633,6 +1633,10 @@ impl AppState {
                 path: draft.editor.file_path.clone(),
                 title: draft.editor.title(),
                 text: draft.editor.buffer.plain_text(),
+                content_html: draft.editor.buffer.to_ord_html(),
+                status: Some(draft.editor.doc_status.clone()),
+                auto_title: Some(draft.editor.doc_auto_title),
+                label_color: Some(draft.editor.doc_label_color.clone()),
             })
             .collect()
     }

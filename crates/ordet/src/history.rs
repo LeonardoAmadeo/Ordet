@@ -12,6 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ordet_format::write_bytes_atomically;
 
+use crate::editor_buffer::{AttrSpan, ParagraphAlignment};
+
 /// Snapshots kept per file, newest last.
 pub const REVISIONS_PER_FILE: usize = 20;
 /// Larger texts are not snapshotted; the cap keeps the file small.
@@ -24,6 +26,10 @@ pub struct Revision {
     pub words: usize,
     pub chars: usize,
     pub text: String,
+    #[serde(default)]
+    pub alignments: Vec<ParagraphAlignment>,
+    #[serde(default)]
+    pub attrs: Vec<AttrSpan>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -35,12 +41,21 @@ pub struct HistoryFile {
 impl HistoryFile {
     /// Record `text` for `key` (a display path). Identical consecutive saves
     /// collapse into one entry, so holding Ctrl-P does not flood the history.
-    pub fn record(&mut self, key: &str, text: &str, timestamp: u64) {
+    pub fn record(
+        &mut self,
+        key: &str,
+        text: &str,
+        alignments: &[ParagraphAlignment],
+        attrs: &[AttrSpan],
+        timestamp: u64,
+    ) {
         if text.len() > REVISION_TEXT_LIMIT {
             return;
         }
         let entries = self.revisions.entry(key.to_string()).or_default();
-        if entries.last().is_some_and(|last| last.text == text) {
+        if entries.last().is_some_and(|last| {
+            last.text == text && last.alignments == alignments && last.attrs == attrs
+        }) {
             return;
         }
         let (words, chars) = count_words_chars(text);
@@ -49,6 +64,8 @@ impl HistoryFile {
             words,
             chars,
             text: text.to_string(),
+            alignments: alignments.to_vec(),
+            attrs: attrs.to_vec(),
         });
         while entries.len() > REVISIONS_PER_FILE {
             entries.remove(0);
@@ -194,11 +211,17 @@ mod tests {
     #[test]
     fn identical_saves_collapse_and_old_ones_fall_off() {
         let mut history = HistoryFile::default();
-        history.record("a.ord", "one", 100);
-        history.record("a.ord", "one", 200);
+        history.record("a.ord", "one", &[], &[], 100);
+        history.record("a.ord", "one", &[], &[], 200);
         assert_eq!(history.revisions_for("a.ord").len(), 1);
         for index in 0..super::REVISIONS_PER_FILE + 5 {
-            history.record("a.ord", &format!("text {index}"), 300 + index as u64);
+            history.record(
+                "a.ord",
+                &format!("text {index}"),
+                &[],
+                &[],
+                300 + index as u64,
+            );
         }
         let revisions = history.revisions_for("a.ord");
         assert_eq!(revisions.len(), super::REVISIONS_PER_FILE);
@@ -208,7 +231,13 @@ mod tests {
     #[test]
     fn oversized_texts_are_not_snapshotted() {
         let mut history = HistoryFile::default();
-        history.record("big.ord", &"x".repeat(super::REVISION_TEXT_LIMIT + 1), 1);
+        history.record(
+            "big.ord",
+            &"x".repeat(super::REVISION_TEXT_LIMIT + 1),
+            &[],
+            &[],
+            1,
+        );
         assert!(history.revisions_for("big.ord").is_empty());
     }
 
@@ -259,5 +288,22 @@ mod tests {
 
         assert_eq!(diff.len(), 300);
         assert_eq!(diff.last().map(|line| line.text.as_str()), Some("new 149"));
+    }
+
+    #[test]
+    fn revisions_keep_rich_formatting() {
+        use crate::editor_buffer::{AttrKind, AttrSpan, ParagraphAlignment};
+
+        let mut history = HistoryFile::default();
+        let alignments = vec![ParagraphAlignment::Center, ParagraphAlignment::Right];
+        let attrs = vec![AttrSpan {
+            start: 0,
+            end: 3,
+            kind: AttrKind::Bold,
+        }];
+        history.record("draft.ord", "one\ntwo", &alignments, &attrs, 1);
+        let revision = &history.revisions_for("draft.ord")[0];
+        assert_eq!(revision.alignments, alignments);
+        assert_eq!(revision.attrs, attrs);
     }
 }

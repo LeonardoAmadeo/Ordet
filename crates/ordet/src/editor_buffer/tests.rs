@@ -1,4 +1,6 @@
-use super::{expand_tabs, EditorBuffer, ParagraphAlignment, SearchOptions};
+use super::{
+    expand_tabs, AttrKind, AttrSpan, BlockPrefix, EditorBuffer, ParagraphAlignment, SearchOptions,
+};
 
 #[test]
 fn search_options_cover_regex_word_and_case() {
@@ -625,6 +627,8 @@ fn every_mutation_round_trips_through_undo_and_redo() {
             Box::new(|b| {
                 b.set_block_begin();
                 b.move_end(80, true);
+                b.set_block_end();
+                b.move_cursor_to_end();
             }),
             Box::new(|b| b.move_block()),
         ),
@@ -1464,4 +1468,150 @@ fn a_blank_paragraph_hangs_its_caret_where_its_text_will_start() {
     buffer.move_to_line(2, 20);
     buffer.set_alignment_for_selection(ParagraphAlignment::Right);
     assert_eq!(buffer.cursor_visual_column(20), 20);
+}
+
+#[test]
+fn sorting_a_long_line_preserves_every_character() {
+    let long = "z".repeat(30_000);
+    let mut buffer = EditorBuffer::from_text(&format!("{long}\na"));
+    buffer.select_all();
+    assert!(buffer.sort_selected_lines());
+    let text = buffer.plain_text();
+    assert!(text.contains(&long));
+    assert_eq!(text.chars().count(), long.chars().count() + 2);
+}
+
+#[test]
+fn block_prefixes_preserve_long_lines() {
+    let long = "word ".repeat(6_000);
+    let mut buffer = EditorBuffer::from_text(&format!("# {long}\nbody"));
+    buffer.select_all();
+    assert!(buffer.apply_block_prefix(BlockPrefix::Heading));
+    let text = buffer.plain_text();
+    assert!(text.contains(&long));
+    assert!(text.starts_with("## word"));
+}
+
+#[test]
+fn deleting_a_whole_line_removes_its_alignment_not_the_next_one() {
+    let mut buffer = EditorBuffer::from_text("one\ntwo\nthree");
+    buffer.move_to_line(2, 80);
+    buffer.set_alignment_for_selection(ParagraphAlignment::Center);
+    buffer.move_to_line(3, 80);
+    buffer.set_alignment_for_selection(ParagraphAlignment::Right);
+
+    buffer.set_cursor_with_anchor(0, 4);
+    assert!(buffer.backspace());
+
+    assert_eq!(buffer.plain_text(), "two\nthree");
+    assert_eq!(
+        buffer.paragraph_alignments,
+        vec![ParagraphAlignment::Center, ParagraphAlignment::Right]
+    );
+}
+
+#[test]
+fn joining_paragraphs_keeps_the_first_paragraph_alignment() {
+    let mut buffer = EditorBuffer::from_text("one\ntwo\nthree");
+    buffer.move_to_line(2, 80);
+    buffer.set_alignment_for_selection(ParagraphAlignment::Center);
+    buffer.move_to_line(3, 80);
+    buffer.set_alignment_for_selection(ParagraphAlignment::Right);
+
+    buffer.set_cursor_with_anchor(2, 5);
+    assert!(buffer.backspace());
+
+    assert_eq!(buffer.plain_text(), "onwo\nthree");
+    assert_eq!(
+        buffer.paragraph_alignments,
+        vec![ParagraphAlignment::Left, ParagraphAlignment::Right]
+    );
+}
+
+#[test]
+fn inserted_paragraphs_inherit_the_current_alignment() {
+    let mut buffer = EditorBuffer::from_text("one\ntwo");
+    buffer.move_to_line(2, 80);
+    buffer.set_alignment_for_selection(ParagraphAlignment::Center);
+    buffer.move_end(80, false);
+    buffer.insert_text("\nthree");
+
+    assert_eq!(buffer.plain_text(), "one\ntwo\nthree");
+    assert_eq!(
+        buffer.paragraph_alignments,
+        vec![
+            ParagraphAlignment::Left,
+            ParagraphAlignment::Center,
+            ParagraphAlignment::Center
+        ]
+    );
+
+    assert!(buffer.undo());
+    assert_eq!(buffer.plain_text(), "one\ntwo");
+    assert_eq!(
+        buffer.paragraph_alignments,
+        vec![ParagraphAlignment::Left, ParagraphAlignment::Center]
+    );
+}
+
+fn block_buffer(text: &str, start: usize, end: usize) -> EditorBuffer {
+    let mut buffer = EditorBuffer::from_text(text);
+    buffer.set_cursor_for_test(start);
+    buffer.set_block_begin();
+    buffer.set_cursor_for_test(end);
+    buffer.set_block_end();
+    buffer
+}
+
+#[test]
+fn copy_block_duplicates_at_the_cursor_destination() {
+    let mut buffer = block_buffer("one\ntwo\nthree", 4, 7);
+    buffer.move_cursor_to_end();
+    assert!(buffer.copy_block());
+    assert_eq!(buffer.plain_text(), "one\ntwo\nthreetwo");
+    assert_eq!(buffer.selected_text().as_deref(), Some("two"));
+}
+
+#[test]
+fn move_block_moves_to_the_cursor_destination() {
+    let mut buffer = block_buffer("one\ntwo\nthree", 4, 7);
+    buffer.set_cursor_for_test(0);
+    assert!(buffer.move_block());
+    assert_eq!(buffer.plain_text(), "twoone\n\nthree");
+    assert_eq!(buffer.selected_text().as_deref(), Some("two"));
+}
+
+#[test]
+fn copy_block_at_its_end_duplicates_after_the_block() {
+    let mut buffer = block_buffer("one\ntwo\nthree", 4, 7);
+    buffer.set_cursor_for_test(7);
+    assert!(buffer.copy_block());
+    assert_eq!(buffer.plain_text(), "one\ntwotwo\nthree");
+}
+
+#[test]
+fn move_block_into_itself_is_rejected() {
+    let mut buffer = block_buffer("one\ntwo\nthree", 4, 7);
+    buffer.set_cursor_for_test(5);
+    assert!(!buffer.move_block());
+    assert_eq!(buffer.plain_text(), "one\ntwo\nthree");
+}
+
+#[test]
+fn replacing_with_a_rich_snapshot_restores_text_styles_and_alignment() {
+    let mut buffer = EditorBuffer::from_text("old");
+    let alignments = vec![ParagraphAlignment::Center, ParagraphAlignment::Right];
+    let attrs = vec![AttrSpan {
+        start: 0,
+        end: 3,
+        kind: AttrKind::Bold,
+    }];
+
+    assert!(buffer.replace_with_rich_text("one\ntwo", &alignments, &attrs));
+    assert_eq!(buffer.plain_text(), "one\ntwo");
+    assert_eq!(buffer.alignments(), alignments.as_slice());
+    assert!(buffer.to_ord_html().contains("<b>one</b>"));
+
+    assert!(buffer.undo());
+    assert_eq!(buffer.plain_text(), "old");
 }

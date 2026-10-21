@@ -258,12 +258,22 @@ impl OrdetApp {
             } => {
                 // Resolve by id: the page may have moved (or been closed)
                 // since the save was spawned.
+                let current_revision = self
+                    .state
+                    .draft_index_by_id(draft_id)
+                    .map(|index| self.state.drafts[index].editor.revision);
                 if let Some(index) = self.state.draft_index_by_id(draft_id) {
                     self.state.drafts[index]
                         .editor
                         .mark_saved(revision, path.clone());
                 }
                 self.state.remember_recent_path(path.clone());
+                // A save of an older snapshot must not close the page or quit:
+                // the newer edits are still unsaved. A later save owns those
+                // intents.
+                if current_revision.is_none_or(|current| revision < current) {
+                    return;
+                }
                 let intent = std::mem::replace(&mut self.pending_after_save, CloseIntent::None);
                 let should_quit = self.state.ui.quit_after_save;
                 self.state.ui.quit_after_save = false;
@@ -405,6 +415,14 @@ impl OrdetApp {
         }
     }
 
+    fn save_gate(&mut self, draft_id: DraftId) -> Arc<SaveGate> {
+        Arc::clone(
+            self.save_gates
+                .entry(draft_id)
+                .or_insert_with(|| Arc::new(SaveGate::new())),
+        )
+    }
+
     pub(super) fn spawn_save(&mut self) {
         let path = self.state.editor().default_save_path();
         self.spawn_save_to(path);
@@ -467,6 +485,8 @@ impl OrdetApp {
         // /private/var, which otherwise keys the same file twice).
         let path = normalize_document_path(path);
         let draft_id = self.state.active_draft_id();
+        let gate = self.save_gate(draft_id);
+        let generation = gate.next_generation();
         let plain_text = self.state.editor().buffer.plain_text();
         // Document HTML is a whole-document format pass. Snapshot the source
         // now and render it on the worker, so the event loop never stalls on
@@ -485,16 +505,24 @@ impl OrdetApp {
         // Snapshot this save for the revision history, then persist the whole
         // history file off the main loop. Keyed replacement means a newer save
         // always wins over a write still in flight.
-        self.state
-            .history
-            .record(&history_key_for(&path), &plain_text, unix_now());
+        self.state.history.record(
+            &history_key_for(&path),
+            &plain_text,
+            snapshot.alignments(),
+            snapshot.attrs(),
+            unix_now(),
+        );
         let history = self.state.history.clone();
+        let history_gate = Arc::clone(&self.history_gate);
+        let history_generation = history_gate.next_generation();
         self.tasks
             .spawn(Some(TaskKey::from("history")), move |token| {
                 if token.is_cancelled() {
                     return Err(TaskError::new("history write cancelled"));
                 }
-                save_history(&history).map_err(TaskError::new)?;
+                history_gate.run(history_generation, || {
+                    save_history(&history).map_err(TaskError::new)
+                })?;
                 if token.is_cancelled() {
                     return Err(TaskError::new("history write cancelled"));
                 }
@@ -506,6 +534,7 @@ impl OrdetApp {
             Self::display_path_tail(&path)
         ));
 
+        let gate_for_worker = Arc::clone(&gate);
         self.tasks
             .spawn(Some(save_task_key(draft_id)), move |token| {
                 if token.is_cancelled() {
@@ -517,16 +546,18 @@ impl OrdetApp {
                 } else {
                     String::new()
                 };
-                Self::write_draft_file(
-                    &path,
-                    &plain_text,
-                    &content_html,
-                    &title,
-                    &doc_status,
-                    doc_auto_title,
-                    &doc_label_color,
-                )
-                .map_err(TaskError::new)?;
+                gate_for_worker.run(generation, || {
+                    Self::write_draft_file(
+                        &path,
+                        &plain_text,
+                        &content_html,
+                        &title,
+                        &doc_status,
+                        doc_auto_title,
+                        &doc_label_color,
+                    )
+                    .map_err(TaskError::new)
+                })?;
 
                 if token.is_cancelled() {
                     return Err(TaskError::new("save cancelled"));
@@ -545,10 +576,14 @@ impl OrdetApp {
     /// through `spawn_save_to`.
     pub(super) fn spawn_save_draft(&mut self, index: usize, path: PathBuf, quiet: bool) {
         let path = normalize_document_path(path);
+        let Some(draft_id) = self.state.drafts.get(index).map(|draft| draft.id) else {
+            return;
+        };
+        let gate = self.save_gate(draft_id);
+        let generation = gate.next_generation();
         let Some(draft) = self.state.drafts.get(index) else {
             return;
         };
-        let draft_id = draft.id;
         let plain_text = draft.editor.buffer.plain_text();
         // As in `spawn_save_to`: render the document HTML on the worker, from
         // a snapshot, so autosave never blocks the keystroke path.
@@ -563,16 +598,24 @@ impl OrdetApp {
         let doc_status = draft.editor.doc_status.clone();
         let doc_auto_title = draft.editor.doc_auto_title;
         let doc_label_color = draft.editor.doc_label_color.clone();
-        self.state
-            .history
-            .record(&history_key_for(&path), &plain_text, unix_now());
+        self.state.history.record(
+            &history_key_for(&path),
+            &plain_text,
+            snapshot.alignments(),
+            snapshot.attrs(),
+            unix_now(),
+        );
         let history = self.state.history.clone();
+        let history_gate = Arc::clone(&self.history_gate);
+        let history_generation = history_gate.next_generation();
         self.tasks
             .spawn(Some(TaskKey::from("history")), move |token| {
                 if token.is_cancelled() {
                     return Err(TaskError::new("history write cancelled"));
                 }
-                save_history(&history).map_err(TaskError::new)?;
+                history_gate.run(history_generation, || {
+                    save_history(&history).map_err(TaskError::new)
+                })?;
                 if token.is_cancelled() {
                     return Err(TaskError::new("history write cancelled"));
                 }
@@ -588,6 +631,7 @@ impl OrdetApp {
             ));
         }
 
+        let gate_for_worker = Arc::clone(&gate);
         self.tasks
             .spawn(Some(save_task_key(draft_id)), move |token| {
                 if token.is_cancelled() {
@@ -599,16 +643,18 @@ impl OrdetApp {
                 } else {
                     String::new()
                 };
-                Self::write_draft_file(
-                    &path,
-                    &plain_text,
-                    &content_html,
-                    &title,
-                    &doc_status,
-                    doc_auto_title,
-                    &doc_label_color,
-                )
-                .map_err(TaskError::new)?;
+                gate_for_worker.run(generation, || {
+                    Self::write_draft_file(
+                        &path,
+                        &plain_text,
+                        &content_html,
+                        &title,
+                        &doc_status,
+                        doc_auto_title,
+                        &doc_label_color,
+                    )
+                    .map_err(TaskError::new)
+                })?;
 
                 if token.is_cancelled() {
                     return Err(TaskError::new("save cancelled"));

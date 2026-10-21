@@ -12,6 +12,16 @@ pub struct RecoveredDraft {
     pub path: Option<PathBuf>,
     pub title: String,
     pub text: String,
+    /// `.ord` HTML captured with the text so inline styles and paragraph
+    /// alignment survive a crash. Empty for older snapshots.
+    #[serde(default)]
+    pub content_html: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub auto_title: Option<bool>,
+    #[serde(default)]
+    pub label_color: Option<String>,
 }
 
 /// The on-disk recovery snapshot.
@@ -60,8 +70,26 @@ pub fn read_recovery_from(path: &Path) -> Result<RecoveryFile, String> {
     if text.trim().is_empty() {
         return Ok(RecoveryFile::default());
     }
-    serde_json::from_str(&text)
-        .map_err(|error| format!("Failed to parse recovery file {}: {error}", path.display()))
+    serde_json::from_str(&text).map_err(|error| {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let backup = path.with_file_name(format!(
+            "{}.corrupt-{stamp}",
+            path.file_name()
+                .map(|name| name.to_string_lossy())
+                .unwrap_or_else(|| "recovery.json".into())
+        ));
+        let note = match fs::rename(path, &backup) {
+            Ok(()) => format!(" The broken file was kept at {}.", backup.display()),
+            Err(rename_error) => format!(" Could not shelve it: {rename_error}."),
+        };
+        format!(
+            "Failed to parse recovery file {}: {error}.{note}",
+            path.display()
+        )
+    })
 }
 
 pub fn save_recovery(file: &RecoveryFile) -> Result<(), String> {
@@ -132,11 +160,19 @@ mod tests {
                     path: Some(std::path::PathBuf::from("/tmp/Alpha.ord")),
                     title: "Alpha.ord".to_string(),
                     text: "alpha body".to_string(),
+                    content_html: "<p>alpha body</p>".to_string(),
+                    status: Some("Draft".to_string()),
+                    auto_title: Some(true),
+                    label_color: Some(String::new()),
                 },
                 RecoveredDraft {
                     path: None,
                     title: "Untitled".to_string(),
                     text: "scratch".to_string(),
+                    content_html: String::new(),
+                    status: None,
+                    auto_title: None,
+                    label_color: None,
                 },
             ],
         };
@@ -154,9 +190,22 @@ mod tests {
         std::fs::write(&path, "{ not json").expect("write");
 
         let result = read_recovery_from(&path);
-        let _ = clear_recovery_at(&path);
-
+        let kept = std::fs::read_dir(path.parent().expect("temp parent"))
+            .expect("read temp dir")
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("ordet-recovery-test-")
+                    && entry.file_name().to_string_lossy().contains(".corrupt-")
+            });
         assert!(result.is_err());
+        assert!(kept.is_some(), "corrupt recovery file must be preserved");
+        if let Some(entry) = kept {
+            let _ = std::fs::remove_file(entry.path());
+        }
+        let _ = clear_recovery_at(&path);
     }
 
     #[test]
