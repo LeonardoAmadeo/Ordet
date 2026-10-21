@@ -33,4 +33,4 @@ signal-hook = "0.3"
 [target.'cfg(windows)'.dependencies]
 arboard = { version = "3", default-features = false }
 ctrlc = "3"
-winreg = "0.55"
+winreg = "0.56"
