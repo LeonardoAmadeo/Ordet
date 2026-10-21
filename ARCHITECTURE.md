@@ -17,6 +17,10 @@
 - `crates/ordet`: terminal word processor built on the framework
 - `crates/ordet-format`: `.ord` file loading and saving
 
+`components.rs` keeps `RootView` and the shared rendering helpers. Panels,
+the welcome screen, modal dialogs, the status bar, and component tests live
+under `crates/ordet/src/components/`.
+
 ## 1. State and vie
 
 The application owns one top-level state container, `AppState`, in `crates/ordet/src/state.rs`.
