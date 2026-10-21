@@ -100,8 +100,8 @@ Crash recovery snapshots (`recovery.json`) and revision logs (`history.json`) ar
 | Platform    | Status                                                                                           |
 | :---------- | :----------------------------------------------------------------------------------------------- |
 | **macOS**   | Primary development platform; fully tested.                                                      |
-| **Linux**   | Ubuntu CI builds and tests pass. Interactive X11/Wayland testing welcome.                        |
-| **Windows** | Native CI builds and tests `ordet.exe`. Works best in Windows Terminal or WezTerm with VT input. |
+| **Linux**   | Ubuntu CI builds, tests, and drives the TUI under a PTY. Interactive X11/Wayland testing welcome. |
+| **Windows** | Native CI builds, tests, and drives `ordet.exe` under ConPTY. Best in Windows Terminal or WezTerm. |
 
 ## Beta Status
 
