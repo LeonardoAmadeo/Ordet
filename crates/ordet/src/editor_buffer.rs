@@ -2229,7 +2229,6 @@ impl EditorBuffer {
             // Freshly measured offsets are absolute; nothing is pending.
             entry.shift = 0;
         }
-
         if cache.fenwick.is_none() {
             let counts: Vec<usize> = cache
                 .entries
