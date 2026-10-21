@@ -258,18 +258,34 @@ fn document_open_cost() {
 
         let wrap_buffer = EditorBuffer::from_text(&text);
         let started = Instant::now();
-        std::hint::black_box(wrap_buffer.total_visual_lines(width));
+        std::hint::black_box(wrap_buffer.visible_layout(width, 0, 44, 1));
         report(
-            &format!("cold wrap fold, {lines} lines"),
+            &format!("cold first frame, {lines} lines"),
+            1,
+            started.elapsed(),
+        );
+
+        let started = Instant::now();
+        while wrap_buffer.warm_wrap_cache(width, 512) {}
+        report(
+            &format!("full wrap warm, {lines} lines"),
             1,
             started.elapsed(),
         );
 
         let stats_buffer = EditorBuffer::from_text(&text);
         let started = Instant::now();
+        std::hint::black_box(stats_buffer.stats_if_ready());
+        report(
+            &format!("cold first stats, {lines} lines"),
+            1,
+            started.elapsed(),
+        );
+
+        let started = Instant::now();
         std::hint::black_box(stats_buffer.stats());
         report(
-            &format!("cold stats fold, {lines} lines"),
+            &format!("full stats fold, {lines} lines"),
             1,
             started.elapsed(),
         );
@@ -291,6 +307,7 @@ fn large_document_frame_cost() {
         let text = sample_document(lines);
         let mut buffer = EditorBuffer::from_text(&text);
         buffer.move_cursor_to_end();
+        while buffer.warm_wrap_cache(width, 512) {}
         let total = buffer.total_visual_lines(width);
         let scroll = total.saturating_sub(rows);
         // Warm the cache exactly as a real frame would. Stats too: the

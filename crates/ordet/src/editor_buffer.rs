@@ -295,8 +295,10 @@ struct WrapCache {
     /// Fenwick tree of per-entry visual line counts: prefix sums give an
     /// entry's global first visual line and locating a visual line gives its
     /// entry in O(log n), so scrolling and cursor queries never walk the
-    /// document. `None` until built (or after a structural change).
+    /// document. Unmeasured entries count as one line until they are warmed.
     fenwick: Option<Fenwick>,
+    /// True while some entries still need measuring at the current width.
+    warming: bool,
 }
 
 /// Fenwick tree over the visual line counts of the wrap entries. Rope line
@@ -411,17 +413,38 @@ impl WrapCache {
         }
     }
 
+    fn estimated_count(entry: &CachedWrapLine) -> usize {
+        if entry.dirty {
+            entry.lines.len().max(1)
+        } else {
+            entry.lines.len()
+        }
+    }
+
+    fn rebuild_fenwick(&mut self) {
+        let counts: Vec<usize> = self.entries.iter().map(Self::estimated_count).collect();
+        let tree = Fenwick::build(&counts);
+        self.total_lines = tree.total();
+        self.fenwick = Some(tree);
+    }
+
+    fn has_dirty(&self) -> bool {
+        self.entries.iter().any(|entry| entry.dirty)
+    }
+
     /// Record entry `index` as stale, without touching the structure.
     fn mark_dirty(&mut self, index: usize) {
         if let Some(indices) = &mut self.dirty {
             indices.push(index);
         }
+        self.warming = true;
     }
 
     /// Everything is suspect: resize, wholesale replacement, splices.
     fn mark_all_dirty(&mut self) {
         self.dirty = None;
         self.fenwick = None;
+        self.warming = true;
     }
 }
 
@@ -537,6 +560,35 @@ struct StatsTotals {
     sentences: usize,
     paragraphs: usize,
     end_open: bool,
+}
+
+fn publish_stats(cache: &mut StatsCache) {
+    let totals = cache.totals;
+    let word_count = totals.words;
+    let reading_seconds = if word_count > 0 {
+        ((word_count as f32 / 200.0) * 60.0).ceil() as usize
+    } else {
+        0
+    };
+    let pages = if word_count == 0 {
+        0
+    } else {
+        word_count.div_ceil(250)
+    };
+    let empty = totals.chars == 0;
+    cache.stats = crate::stats::WordStats {
+        word_count,
+        chars: totals.chars,
+        chars_no_spaces: totals.chars.saturating_sub(totals.whitespace),
+        paragraphs: if empty { 0 } else { totals.paragraphs },
+        sentences: if empty {
+            0
+        } else {
+            totals.sentences + usize::from(totals.end_open)
+        },
+        reading_seconds,
+        pages,
+    };
 }
 
 /// Recompute the whole sentence chain from the per-line transition tables.
@@ -804,6 +856,7 @@ impl EditorBuffer {
                 total_lines: 0,
                 dirty: None,
                 fenwick: None,
+                warming: false,
             }),
             stats_cache: RefCell::new(StatsCache {
                 edit_seq: u64::MAX,
@@ -2009,7 +2062,17 @@ impl EditorBuffer {
         rows: usize,
         margin: usize,
     ) -> WrapLayout {
-        self.ensure_wrap_cache(width);
+        let margin_start = first_visual.saturating_sub(margin);
+        self.measure_visible_entries(
+            width,
+            margin_start,
+            rows.saturating_add(margin.saturating_mul(2)),
+        );
+        let start = {
+            let cache = self.wrap_cache.borrow();
+            first_visual.saturating_sub(margin).min(cache.total_lines)
+        };
+        self.measure_visible_entries(width, start, rows.saturating_add(margin.saturating_mul(2)));
         let cache = &self.wrap_cache.borrow();
         let total = cache.total_lines;
         let start = first_visual.saturating_sub(margin).min(total);
@@ -2046,10 +2109,11 @@ impl EditorBuffer {
     /// Global visual index of the line holding `cursor`, without building a
     /// layout. This is what scrolling needs.
     pub fn visual_line_for_cursor(&self, width: usize, cursor: usize) -> usize {
-        self.ensure_wrap_cache(width);
-        let cache = &self.wrap_cache.borrow();
         let cursor = cursor.min(self.rope.len_chars());
-        let rope_line = self.rope.char_to_line(cursor).min(cache.entries.len());
+        let rope_line = self.rope.char_to_line(cursor);
+        self.ensure_wrap_entry(width, rope_line);
+        let cache = &self.wrap_cache.borrow();
+        let rope_line = rope_line.min(cache.entries.len());
         let index = cache.lines_before(rope_line);
         let Some(entry) = cache.entries.get(rope_line) else {
             return index;
@@ -2071,7 +2135,7 @@ impl EditorBuffer {
 
     /// Visual lines in the whole document, without building a layout.
     pub fn total_visual_lines(&self, width: usize) -> usize {
-        self.ensure_wrap_cache(width);
+        self.ensure_wrap(width, 256);
         self.wrap_cache.borrow().total_lines
     }
 
@@ -2154,93 +2218,173 @@ impl EditorBuffer {
             })
     }
 
-    /// Bring the memo up to date for `width`.
-    ///
-    /// A frame that only moved the cursor matches `edit_seq` and returns
-    /// immediately. After an edit, only entries the mutation marked `dirty` are
-    /// re-measured: `rope_insert` and `rope_remove` already spliced the entry
-    /// list and shifted every untouched line's offsets, so this loop never
-    /// compares text and never walks lines it can prove are clean.
+    /// Bring the memo fully up to date for `width`. Tests and the reference
+    /// layout use this; the frame path uses the budgeted warmers below.
     fn ensure_wrap_cache(&self, width: usize) {
+        self.ensure_wrap(width, usize::MAX);
+    }
+
+    /// Measure at most `budget` more source lines and report whether any
+    /// entries are still unmeasured. The app calls this from the draw loop so
+    /// a cold document warms over several frames instead of one long stall.
+    pub(crate) fn warm_wrap_cache(&self, width: usize, budget: usize) -> bool {
+        self.ensure_wrap(width, budget)
+    }
+
+    fn ensure_wrap(&self, width: usize, budget: usize) -> bool {
         let wrap_width = width.max(1);
         {
             let cache = self.wrap_cache.borrow();
-            if cache.width == wrap_width && cache.edit_seq == self.edit_seq {
-                return;
+            if !cache.warming && cache.width == wrap_width && cache.edit_seq == self.edit_seq {
+                return false;
             }
         }
 
         let mut cache = self.wrap_cache.borrow_mut();
         if cache.width != wrap_width {
-            // Per-line results are only meaningful at the width they were
-            // measured for, so a resize has to start over.
             cache.width = wrap_width;
             for entry in cache.entries.iter_mut() {
                 entry.dirty = true;
             }
-            cache.mark_all_dirty();
-        }
-        let line_count = self.rope.len_lines();
-        if cache.entries.len() > line_count {
-            cache.entries.truncate(line_count);
-            cache.mark_all_dirty();
-        }
-        while cache.entries.len() < line_count {
-            cache.entries.push(CachedWrapLine {
-                lines: Vec::new(),
-                dirty: true,
-                shift: 0,
-            });
-            cache.mark_all_dirty();
+            cache.dirty = None;
+            cache.fenwick = None;
+            cache.warming = true;
         }
 
-        // Typing refreshes the one or two entries the edit touched; a resize
-        // or a splice refreshes every entry that is marked dirty.
-        let indices: Vec<usize> = match cache.dirty.take() {
+        let line_count = self.rope.len_lines();
+        if cache.entries.len() != line_count {
+            cache.entries.truncate(line_count);
+            while cache.entries.len() < line_count {
+                cache.entries.push(CachedWrapLine {
+                    lines: Vec::new(),
+                    dirty: true,
+                    shift: 0,
+                });
+            }
+            cache.dirty = None;
+            cache.fenwick = None;
+            cache.warming = true;
+        }
+        if cache.fenwick.is_none() {
+            cache.rebuild_fenwick();
+        }
+
+        let mut remaining = match cache.dirty.take() {
             Some(indices) => indices,
             None => (0..line_count).collect(),
         };
-        for source_line in indices {
+        let mut still = Vec::new();
+        let mut measured = 0usize;
+        for source_line in remaining.drain(..) {
             if source_line >= line_count || source_line >= cache.entries.len() {
                 continue;
             }
             if !cache.entries[source_line].dirty {
                 continue;
             }
-            let start = self.rope.line_to_char(source_line);
-            let end = self.display_line_end(source_line);
-            let alignment = self
-                .paragraph_alignments
-                .get(source_line)
-                .copied()
-                .unwrap_or_default();
-            let text = self.rope.slice(start..end).to_string();
-            let display = expand_tabs(&text);
-            let lines = wrap_source_line(display.as_ref(), start, alignment, wrap_width);
-            let old_len = cache.entries[source_line].lines.len();
-            let new_len = lines.len();
-            if old_len != new_len {
-                if let Some(tree) = cache.fenwick.as_mut() {
-                    tree.add(source_line, new_len as isize - old_len as isize);
-                }
+            if measured >= budget {
+                still.push(source_line);
+                continue;
             }
-            let entry = &mut cache.entries[source_line];
-            entry.lines = lines;
-            entry.dirty = false;
-            // Freshly measured offsets are absolute; nothing is pending.
-            entry.shift = 0;
+            self.measure_wrap_entry(&mut cache, source_line, wrap_width);
+            measured += 1;
         }
-        if cache.fenwick.is_none() {
-            let counts: Vec<usize> = cache
-                .entries
-                .iter()
-                .map(|entry| entry.lines.len())
-                .collect();
-            cache.fenwick = Some(Fenwick::build(&counts));
-        }
+
         cache.total_lines = cache.fenwick.as_ref().map_or(0, Fenwick::total);
-        cache.dirty = Some(Vec::new());
-        cache.edit_seq = self.edit_seq;
+        cache.warming = cache.has_dirty();
+        if cache.warming {
+            cache.dirty = Some(still);
+        } else {
+            cache.dirty = Some(Vec::new());
+            cache.edit_seq = self.edit_seq;
+        }
+        cache.warming
+    }
+
+    fn measure_wrap_entry(&self, cache: &mut WrapCache, source_line: usize, wrap_width: usize) {
+        if !cache.entries[source_line].dirty {
+            return;
+        }
+        let start = self.rope.line_to_char(source_line);
+        let end = self.display_line_end(source_line);
+        let alignment = self
+            .paragraph_alignments
+            .get(source_line)
+            .copied()
+            .unwrap_or_default();
+        let text = self.rope.slice(start..end).to_string();
+        let display = expand_tabs(&text);
+        let lines = wrap_source_line(display.as_ref(), start, alignment, wrap_width);
+        let old_count = WrapCache::estimated_count(&cache.entries[source_line]);
+        let new_count = lines.len();
+        if old_count != new_count {
+            if let Some(tree) = cache.fenwick.as_mut() {
+                tree.add(source_line, new_count as isize - old_count as isize);
+            }
+        }
+        let entry = &mut cache.entries[source_line];
+        entry.lines = lines;
+        entry.dirty = false;
+        entry.shift = 0;
+    }
+
+    fn ensure_wrap_entry(&self, width: usize, source_line: usize) {
+        let wrap_width = width.max(1);
+        self.ensure_wrap(wrap_width, 256);
+        let needs_measure = {
+            let cache = self.wrap_cache.borrow();
+            cache
+                .entries
+                .get(source_line)
+                .is_some_and(|entry| entry.dirty)
+        };
+        if !needs_measure {
+            return;
+        }
+        let mut cache = self.wrap_cache.borrow_mut();
+        self.measure_wrap_entry(&mut cache, source_line, wrap_width);
+        cache.total_lines = cache.fenwick.as_ref().map_or(0, Fenwick::total);
+        cache.warming = cache.has_dirty();
+        if !cache.warming {
+            cache.dirty = Some(Vec::new());
+            cache.edit_seq = self.edit_seq;
+        }
+    }
+
+    fn measure_visible_entries(&self, width: usize, first_visual: usize, rows: usize) {
+        let wrap_width = width.max(1);
+        self.ensure_wrap(wrap_width, 256);
+        for _ in 0..2 {
+            let (start, end) = {
+                let cache = self.wrap_cache.borrow();
+                let (entry, _) = cache.locate(first_visual).unwrap_or((0, 0));
+                let start = entry.saturating_sub(1);
+                let end = entry
+                    .saturating_add(rows.max(4))
+                    .saturating_add(8)
+                    .min(cache.entries.len());
+                (start, end)
+            };
+            let indices: Vec<usize> = {
+                let cache = self.wrap_cache.borrow();
+                (start..end)
+                    .filter(|&index| cache.entries[index].dirty)
+                    .collect()
+            };
+            if indices.is_empty() {
+                return;
+            }
+            let mut cache = self.wrap_cache.borrow_mut();
+            for index in indices {
+                self.measure_wrap_entry(&mut cache, index, wrap_width);
+            }
+            cache.total_lines = cache.fenwick.as_ref().map_or(0, Fenwick::total);
+            cache.warming = cache.has_dirty();
+            if !cache.warming {
+                cache.dirty = Some(Vec::new());
+                cache.edit_seq = self.edit_seq;
+            }
+        }
     }
 
     fn move_vertical(&mut self, width: usize, extend: bool, up: bool) {
@@ -2451,33 +2595,25 @@ impl EditorBuffer {
         }
     }
 
-    /// Rescan the dirty lines and adjust the running totals, once per
-    /// `edit_seq`. Line-count changes were already spliced into the line list
-    /// by the rope helpers; anything else is caught by the length check.
-    fn refresh_stats(&self) {
+    /// Advance the statistics fold by at most `budget` lines. The draw loop
+    /// calls this with a budget; `stats()` calls it with `usize::MAX`.
+    pub(crate) fn warm_stats_cache(&self, budget: usize) -> bool {
         let mut cache = self.stats_cache.borrow_mut();
         if cache.edit_seq == self.edit_seq {
-            return;
+            return false;
         }
 
         let line_count = self.rope.len_lines();
         if cache.lines.len() != line_count {
-            // A rope replacement slipped past the splicing helpers (or this
-            // is the first fold): rebuild every line.
             cache.lines.clear();
             cache.lines.resize(line_count, CachedLineStats::default());
             cache.totals = StatsTotals::default();
             cache.sentences_dirty = false;
             cache.dirty = Some((0, line_count));
+            cache.edit_seq = u64::MAX;
+            cache.stats = crate::stats::WordStats::default();
         }
-        let dirty = cache
-            .dirty
-            .map(|(first, last)| (first.min(line_count), last.min(line_count)))
-            .filter(|(first, last)| first < last);
-        cache.dirty = None;
 
-        // The document's last line carries no trailing newline; its text ends
-        // at the rope end instead of one char earlier.
         let ends_with_newline =
             self.rope.len_chars() > 0 && self.rope.char(self.rope.len_chars() - 1) == '\n';
         let eof_line = if ends_with_newline {
@@ -2486,40 +2622,50 @@ impl EditorBuffer {
             line_count.saturating_sub(1)
         };
 
-        if let Some((first, last)) = dirty {
-            self.fold_stats_range(&mut cache, first, last, eof_line);
-        }
-        if cache.sentences_dirty {
-            refold_sentence_chain(&mut cache);
+        if let Some((first, last)) = cache.dirty {
+            let first = first.min(line_count);
+            let last = last.min(line_count);
+            let next = if budget == usize::MAX {
+                last
+            } else {
+                first.saturating_add(budget).min(last)
+            };
+            if first < next {
+                self.fold_stats_range(&mut cache, first, next, eof_line);
+            }
+            cache.dirty = (next < last).then_some((next, last));
         }
 
-        let totals = cache.totals;
-        let word_count = totals.words;
-        let reading_seconds = if word_count > 0 {
-            ((word_count as f32 / 200.0) * 60.0).ceil() as usize
+        let complete = cache.dirty.is_none();
+        if complete && cache.sentences_dirty {
+            refold_sentence_chain(&mut cache);
+            cache.sentences_dirty = false;
+        }
+        publish_stats(&mut cache);
+        if complete {
+            cache.edit_seq = self.edit_seq;
+        }
+        !complete
+    }
+
+    pub fn stats_ready(&self) -> bool {
+        self.stats_cache.borrow().edit_seq == self.edit_seq
+    }
+
+    pub(crate) fn stats_snapshot(&self) -> crate::stats::WordStats {
+        self.stats_cache.borrow().stats.clone()
+    }
+
+    pub(crate) fn stats_if_ready(&self) -> Option<crate::stats::WordStats> {
+        // A small budget makes the status and panels correct for ordinary
+        // documents on their first frame. The draw loop finishes the fold in
+        // larger chunks for very large ones.
+        self.warm_stats_cache(256);
+        if self.stats_ready() {
+            Some(self.stats_snapshot())
         } else {
-            0
-        };
-        let pages = if word_count == 0 {
-            0
-        } else {
-            word_count.div_ceil(250)
-        };
-        let empty = totals.chars == 0;
-        cache.stats = crate::stats::WordStats {
-            word_count,
-            chars: totals.chars,
-            chars_no_spaces: totals.chars.saturating_sub(totals.whitespace),
-            paragraphs: if empty { 0 } else { totals.paragraphs },
-            sentences: if empty {
-                0
-            } else {
-                totals.sentences + usize::from(totals.end_open)
-            },
-            reading_seconds,
-            pages,
-        };
-        cache.edit_seq = self.edit_seq;
+            None
+        }
     }
 
     /// Re-scan `[first, last)` from the rope and adjust the running totals.
@@ -2604,8 +2750,9 @@ impl EditorBuffer {
 
     /// Current whole-document statistics. Folds the dirty range once per
     /// edit; a cursor move or an idle frame reuses the result.
+    #[cfg(test)]
     pub fn stats(&self) -> crate::stats::WordStats {
-        self.refresh_stats();
+        self.warm_stats_cache(usize::MAX);
         self.stats_cache.borrow().stats.clone()
     }
 

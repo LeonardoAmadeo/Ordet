@@ -1736,7 +1736,23 @@ pub(super) fn render_stats_panel(
     model: &AppState,
     theme: ThemePalette,
 ) {
-    let stats = model.editor().word_stats();
+    let Some(stats) = model.editor().word_stats_if_ready() else {
+        let lines = vec![Line::from(Span::styled(
+            "Counting words and characters...",
+            Style::default().fg(theme.muted_fg).bg(theme.panel_alt_bg),
+        ))];
+        frame.clear_rect(
+            area,
+            Style::default().bg(theme.panel_alt_bg).fg(theme.text_fg),
+        );
+        frame.draw_lines(
+            area,
+            &lines,
+            Style::default().bg(theme.panel_alt_bg).fg(theme.text_fg),
+            Alignment::Left,
+        );
+        return;
+    };
     let mut lines = vec![
         stat_line("Words", stats.word_count, theme),
         stat_line("Characters", stats.chars, theme),

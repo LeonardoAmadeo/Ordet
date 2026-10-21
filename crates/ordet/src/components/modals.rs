@@ -232,7 +232,7 @@ pub(super) fn about_lines(
     theme: ThemePalette,
 ) -> Vec<Line> {
     let editor = model.editor();
-    let stats = editor.word_stats();
+    let stats = editor.word_stats_if_ready();
     let (line, column) = editor.buffer.cursor_line_and_col(status_wrap_width(model));
     let page = match model.active_page_number() {
         Some(page) => format!("{page} of {}", model.visible_draft_count()),
@@ -276,8 +276,24 @@ pub(super) fn about_lines(
         help_section_title("DOCUMENT", theme, theme.panel_alt_bg),
         about_stat("Page", title, width, theme),
         about_stat("Cursor", format!("L{line} C{column}"), width, theme),
-        about_stat("Words", stats.word_count, width, theme),
-        about_stat("Characters", stats.chars, width, theme),
+        about_stat(
+            "Words",
+            stats.as_ref().map_or_else(
+                || "counting...".to_string(),
+                |stats| stats.word_count.to_string(),
+            ),
+            width,
+            theme,
+        ),
+        about_stat(
+            "Characters",
+            stats.as_ref().map_or_else(
+                || "counting...".to_string(),
+                |stats| stats.chars.to_string(),
+            ),
+            width,
+            theme,
+        ),
         about_stat("Lines", editor.buffer.source_line_count(), width, theme),
         about_stat(
             "Modified",

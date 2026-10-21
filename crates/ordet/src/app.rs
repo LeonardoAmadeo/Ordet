@@ -392,9 +392,9 @@ impl OrdetApp {
             // before this draw, and nothing here sleeps toward a frame cap.
             if self.redraw_requested {
                 let draw_started = Instant::now();
-                self.draw_frame(terminal)?;
+                let warming = self.draw_frame(terminal)?;
                 let draw_split = draw_started.elapsed();
-                self.redraw_requested = false;
+                self.redraw_requested = warming;
                 if let Some(at) = input_at.take() {
                     // Whole span for the keystroke: wakeup through render,
                     // ANSI write, and the flush that `draw_frame` ends with.
@@ -466,7 +466,7 @@ impl OrdetApp {
         Ok(())
     }
 
-    fn draw_frame(&mut self, terminal: &mut Terminal) -> Result<(), Box<dyn std::error::Error>> {
+    fn draw_frame(&mut self, terminal: &mut Terminal) -> Result<bool, Box<dyn std::error::Error>> {
         let area = terminal.size()?;
         self.state.update_layout(area);
         self.refresh_window_views();
@@ -497,7 +497,10 @@ impl OrdetApp {
             }
         })?;
         self.flush_pending_overlays(terminal)?;
-        Ok(())
+        let width = self.editor_text_width().max(1);
+        let wrap_warming = self.state.editor().buffer.warm_wrap_cache(width, 512);
+        let stats_warming = self.state.editor().buffer.warm_stats_cache(2048);
+        Ok(wrap_warming || stats_warming)
     }
 
     /// Emit raw terminal sequences queued by components, currently OSC 52
