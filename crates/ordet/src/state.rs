@@ -900,7 +900,7 @@ impl AppState {
             return None;
         }
 
-        let current = self.editor().word_stats().word_count;
+        let current = self.editor().word_stats_if_ready()?.word_count;
         let met = current >= target;
         let remaining = target.saturating_sub(current);
         let overflow = current.saturating_sub(target);
@@ -1800,8 +1800,8 @@ impl EditorPaneState {
 
     /// Word/character/sentence/paragraph totals, folded once per edit inside
     /// the buffer. Reading them never scans the document.
-    pub fn word_stats(&self) -> WordStats {
-        self.buffer.stats()
+    pub fn word_stats_if_ready(&self) -> Option<WordStats> {
+        self.buffer.stats_if_ready()
     }
 }
 

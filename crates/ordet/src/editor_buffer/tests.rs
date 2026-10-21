@@ -1615,3 +1615,50 @@ fn replacing_with_a_rich_snapshot_restores_text_styles_and_alignment() {
     assert!(buffer.undo());
     assert_eq!(buffer.plain_text(), "old");
 }
+
+#[test]
+fn wrap_cache_warms_in_budgets_without_blocking_the_first_window() {
+    let text = (0..1_000)
+        .map(|index| format!("line {index} has enough words to wrap at a narrow width"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let buffer = EditorBuffer::from_text(&text);
+    let width = 40;
+    let window = buffer.visible_layout(width, 0, 20, 1);
+    assert!(!window.lines.is_empty());
+    assert!(
+        buffer.warm_wrap_cache(width, 0),
+        "the cold document should still have unmeasured lines"
+    );
+
+    let mut rounds = 0;
+    while buffer.warm_wrap_cache(width, 100) {
+        rounds += 1;
+        assert!(rounds < 100, "warming did not converge");
+    }
+    let full = buffer.layout(width);
+    assert_eq!(buffer.total_visual_lines(width), full.total_lines());
+}
+
+#[test]
+fn stats_cache_warms_in_budgets_and_matches_the_full_fold() {
+    let text = (0..1_000)
+        .map(|index| format!("Line {index} has four words."))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let expected = EditorBuffer::from_text(&text).stats();
+    let buffer = EditorBuffer::from_text(&text);
+    assert!(!buffer.stats_ready());
+    assert!(
+        buffer.warm_stats_cache(100),
+        "the first budget should not finish a large document"
+    );
+
+    let mut rounds = 0;
+    while buffer.warm_stats_cache(100) {
+        rounds += 1;
+        assert!(rounds < 100, "stats warming did not converge");
+    }
+    assert!(buffer.stats_ready());
+    assert_eq!(buffer.stats_snapshot(), expected);
+}

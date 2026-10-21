@@ -170,9 +170,11 @@ That wrapper is responsible for:
 - regex/whole-word/case-sensitive search and replace
 - paragraph alignment, which survives a round trip through `.ord`
 
-### Eager wrap cache
+### Progressive wrap cache
 
 Rendering asks for the layout every frame, so recomputing it per keystroke would cost a full re-wrap each time. `WrapCache` memoises one `CachedWrapLine` per source line behind a `RefCell` (render only gets `&self`). The maintenance is eager rather than validated: `rope_insert` and `rope_remove`, the only two ways text enters or leaves the rope, splice the entry list, mark the edited lines dirty, and record a lazy integer shift on untouched lines, folded into their stored offsets when they are cloned out for output. `ensure_wrap_cache` then re-measures only dirty entries and never compares text. Undo and redo apply inverse ops through the same two helpers, so the cache stays correct for free; alignment-only changes mark their range dirty explicitly.
+
+A cold document does not wrap every line in one pass. `warm_wrap_cache` measures a bounded chunk per frame, unmeasured entries count as one visual line while the totals converge, and `visible_layout` measures its own window on demand. The statistics fold uses the same budgeted approach; the status row and stats panel omit or mark counts as counting until the fold reaches the current edit sequence.
 
 `layout()` still exists but only the reference tests use it. Production paths use `visible_layout` (visible slice plus margin), `visual_line_for_cursor`, `total_visual_lines`, and one-line helpers (`visual_line_start/end`, `visual_column_for_cursor`, `visual_cursor_for_column`) that clone at most a single wrapped line. A parity test asserts every movement command agrees with the full layout exactly.
 

@@ -194,7 +194,12 @@ impl OrdetApp {
                 .state
                 .drafts
                 .get(index)
-                .map(|draft| draft.editor.word_stats().word_count)
+                .map(|draft| {
+                    draft
+                        .editor
+                        .word_stats_if_ready()
+                        .map_or(0, |stats| stats.word_count)
+                })
                 .unwrap_or(0);
             self.state.remove_draft_at(index);
             if words > 0 {

@@ -68,11 +68,12 @@ pub(super) fn status_fields(model: &AppState, theme: ThemePalette) -> Vec<(Strin
         ));
     }
     if model.ui.show_live_counts {
-        let stats = editor.word_stats();
-        fields.push((
-            format!("W:{} C:{}", stats.word_count, stats.chars),
-            theme.bar_muted_fg(),
-        ));
+        if let Some(stats) = editor.word_stats_if_ready() {
+            fields.push((
+                format!("W:{} C:{}", stats.word_count, stats.chars),
+                theme.bar_muted_fg(),
+            ));
+        }
     }
     if model.window_count() > 1 {
         fields.push((
