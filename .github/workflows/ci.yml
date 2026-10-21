@@ -24,6 +24,20 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --all-targets -- --test-threads=1
       - run: cargo build --release -p ordet
+      - name: Linux terminal smoke test
+        run: |
+          sudo apt-get update && sudo apt-get install -y tmux
+          tmux new-session -d -s ordet-smoke "target/release/ordet --config /tmp/ordet-smoke.json"
+          sleep 1
+          tmux send-keys -t ordet-smoke d
+          sleep 0.3
+          tmux send-keys -t ordet-smoke F1
+          sleep 0.5
+          tmux capture-pane -p -t ordet-smoke | grep -q "Help"
+          tmux send-keys -t ordet-smoke Escape
+          tmux send-keys -t ordet-smoke C-q
+          sleep 1
+          ! tmux has-session -t ordet-smoke 2>/dev/null
 
   windows:
     name: Windows build and tests
