@@ -192,7 +192,7 @@ Undo records hold inverse operations (`Insert { at, text }` / `Remove { start, e
 
 ## 10. Configuration
 
-`settings.rs` holds one JSON file (`AppSettings`, every field `#[serde(default)]` so old files keep parsing). A corrupt file heals itself: it is shelved as `settings.json.corrupt-<timestamp>` and the app starts from defaults with a status note. The CLI (`--config`, `--print-config`, `--reset-config`, `--help`, `--version`, `--` separator) is parsed in `app.rs` before the terminal is touched. The Settings panel (`F2`) edits theme, accent, language, line numbers, the ruler, the menu bar, word target, autosave, and backups.
+`settings.rs` holds one JSON file (`AppSettings`, every field `#[serde(default)]` so old files keep parsing). A corrupt file heals itself: it is shelved as `settings.json.corrupt-<timestamp>` and the app starts from defaults with a status note. The CLI (`--config`, `--print-config`, `--reset-config`, `--help`, `--version`, `--` separator) is parsed in `app/cli.rs` before the terminal is touched. The Settings panel (`F2`) edits theme, accent, language, line numbers, the ruler, the menu bar, word target, autosave, and backups.
 
 ## 11. `.ord` fidelity
 
@@ -200,7 +200,7 @@ Undo records hold inverse operations (`Insert { at, text }` / `Remove { start, e
 
 ## Main loop
 
-`crates/ordet/src/app.rs` owns the runtime loop:
+`crates/ordet/src/app.rs` owns the runtime loop and `OrdetApp`. Input, documents, prompts, settings pickers, windows, helpers, and the CLI live in `crates/ordet/src/app/`.
 
 1. draw the frame if a redraw is pending; a frame is never delayed, only
    coalesced with the events that arrived while the last one was painted
