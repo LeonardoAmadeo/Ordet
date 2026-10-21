@@ -1,6 +1,7 @@
 use ordet_format::escape_xml;
 use ropey::Rope;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
@@ -183,9 +184,9 @@ pub(crate) fn tab_advance(column: usize) -> usize {
 
 /// Expand tabs to the eight-column grid. Tabs are only display sugar: the
 /// buffer always stores them literally, so files round-trip byte for byte.
-pub(crate) fn expand_tabs(text: &str) -> String {
+pub(crate) fn expand_tabs(text: &str) -> Cow<'_, str> {
     if !text.contains('\t') {
-        return text.to_string();
+        return Cow::Borrowed(text);
     }
     let mut out = String::with_capacity(text.len() + TAB_STOP);
     let mut column = 0;
@@ -206,7 +207,7 @@ pub(crate) fn expand_tabs(text: &str) -> String {
             }
         }
     }
-    out
+    Cow::Owned(out)
 }
 
 #[derive(Clone, Debug)]
@@ -2215,7 +2216,7 @@ impl EditorBuffer {
                 .unwrap_or_default();
             let text = self.rope.slice(start..end).to_string();
             let display = expand_tabs(&text);
-            let lines = wrap_source_line(&display, start, alignment, wrap_width);
+            let lines = wrap_source_line(display.as_ref(), start, alignment, wrap_width);
             let old_len = cache.entries[source_line].lines.len();
             let new_len = lines.len();
             if old_len != new_len {
