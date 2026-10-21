@@ -158,7 +158,7 @@ A task that finishes after its draft moved on is discarded rather than applied: 
 
 ## 7. Document buffer
 
-The word processor uses `ropey` behind the thin `EditorBuffer` wrapper in `crates/ordet/src/editor_buffer.rs`.
+The word processor uses `ropey` behind the thin `EditorBuffer` wrapper in `crates/ordet/src/editor_buffer.rs`. Wrapping geometry lives in `editor_buffer/layout.rs`, rich-text parsing and attribute helpers in `editor_buffer/formatting.rs`, and the tests and benchmarks are separate modules.
 
 That wrapper is responsible for:
 
