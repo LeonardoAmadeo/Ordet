@@ -94,9 +94,10 @@ pub fn serialize(document: &OrdetDocument) -> String {
         "  <content format=\"html\">".to_string(),
         escape_xml(&document.content_html),
         "  </content>".to_string(),
-        "  <plainText>".to_string(),
-        escape_xml(&document.plain_text),
-        "  </plainText>".to_string(),
+        format!(
+            "  <plainText format=\"inline\">{}</plainText>",
+            escape_xml(&document.plain_text)
+        ),
         "</ordet-document>".to_string(),
     ]);
 
@@ -108,7 +109,7 @@ pub fn parse(xml: &str, fallback_title: &str) -> Result<OrdetDocument, FormatErr
         return Err(FormatError::InvalidDocument);
     }
 
-    let plain_text = extract_xml_tag(xml, "plainText").unwrap_or_default();
+    let plain_text = extract_plain_text(xml).unwrap_or_default();
     let content_html = extract_content_tag(xml).unwrap_or_else(|| plain_text_to_html(&plain_text));
     let title = extract_xml_tag(xml, "title")
         .filter(|value| !value.trim().is_empty())
@@ -251,6 +252,25 @@ pub fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
     extract_xml_capture(xml, &pattern)
 }
 
+fn extract_plain_text(xml: &str) -> Option<String> {
+    let pattern = Regex::new(r#"(?s)<plainText(\s[^>]*)?>(.*?)</plainText>"#).ok()?;
+    let captures = pattern.captures(xml)?;
+    let attributes = captures
+        .get(1)
+        .map(|capture| capture.as_str())
+        .unwrap_or("");
+    let raw = captures.get(2)?.as_str();
+    let text = if attributes.contains("format=\"inline\"") {
+        raw.to_string()
+    } else {
+        // Older files put the payload on its own indented line. Remove exactly
+        // that structural newline and closing indent, not user whitespace.
+        let text = raw.strip_prefix('\n').unwrap_or(raw);
+        text.strip_suffix("\n  ").unwrap_or(text).to_string()
+    };
+    Some(unescape_xml(&text))
+}
+
 pub fn extract_content_tag(xml: &str) -> Option<String> {
     let pattern = Regex::new(r#"(?s)<content\b[^>]*>(.*?)</content>"#).ok()?;
     extract_xml_capture(xml, &pattern)
@@ -323,5 +343,27 @@ mod tests {
         assert_eq!(parsed.title, "The Hobbit");
         assert_eq!(parsed.plain_text, "The Hobbit");
         assert!(parsed.auto_title);
+    }
+
+    #[test]
+    fn round_trips_plain_text_whitespace() {
+        let plain = "  leading\n\ttabbed\ntrailing  \n";
+        let document = OrdetDocument {
+            title: "Whitespace".to_string(),
+            status: DEFAULT_STATUS.to_string(),
+            auto_title: false,
+            label_color: String::new(),
+            content_html: plain_text_to_html(plain),
+            plain_text: plain.to_string(),
+        };
+        let parsed = parse(&serialize(&document), "Untitled").expect("round trip");
+        assert_eq!(parsed.plain_text, plain);
+    }
+
+    #[test]
+    fn parses_legacy_multiline_plain_text_without_trimming_document_text() {
+        let xml = "<ordet-document version=\"1.0\">\n  <title>Legacy</title>\n  <plainText>\n  hello  \n  </plainText>\n</ordet-document>";
+        let parsed = parse(xml, "Untitled").expect("legacy document");
+        assert_eq!(parsed.plain_text, "  hello  ");
     }
 }

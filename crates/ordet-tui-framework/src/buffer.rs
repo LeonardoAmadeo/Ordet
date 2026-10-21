@@ -39,6 +39,12 @@ impl Symbol {
             if let Some(existing) = interner.get(symbol) {
                 return Self(Rc::clone(existing));
             }
+            // Bound long-running sessions that paste many distinct symbols.
+            // Existing cells keep their own Rc, so clearing only resets the
+            // sharing table; it never invalidates rendered text.
+            if interner.len() >= 4096 {
+                interner.clear();
+            }
             let entry: Rc<str> = Rc::from(symbol);
             interner.insert(Rc::clone(&entry));
             Self(entry)
@@ -159,14 +165,17 @@ impl Buffer {
     }
 
     pub fn write_text(&mut self, point: Point, text: &str, style: Style, max_width: u16) -> u16 {
-        let limit = point.x.saturating_add(max_width);
+        if point.y < self.area.y || point.y >= self.area.bottom() {
+            return 0;
+        }
+        let limit = point.x.saturating_add(max_width).min(self.area.right());
         let mut cursor_x = point.x;
 
         // Fast path for plain ASCII, which is nearly all editor text: no
         // grapheme segmentation, no width tables, one byte one column.
         if text.is_ascii() {
             for &byte in text.as_bytes() {
-                if cursor_x >= self.area.width || cursor_x >= limit {
+                if cursor_x >= self.area.right() || cursor_x >= limit {
                     break;
                 }
                 self.set_cell(
@@ -184,10 +193,10 @@ impl Buffer {
 
         for grapheme in UnicodeSegmentation::graphemes(text, true) {
             let width = UnicodeWidthStr::width(grapheme).max(1) as u16;
-            if cursor_x >= self.area.width || cursor_x >= limit {
+            if cursor_x >= self.area.right() || cursor_x >= limit {
                 break;
             }
-            if cursor_x.saturating_add(width) > self.area.width
+            if cursor_x.saturating_add(width) > self.area.right()
                 || cursor_x.saturating_add(width) > limit
             {
                 break;
@@ -226,7 +235,10 @@ impl Buffer {
                 }
                 let x = index as u16 % self.area.width.max(1);
                 let y = index as u16 / self.area.width.max(1);
-                Some((Point::new(x, y), current))
+                Some((
+                    Point::new(self.area.x.saturating_add(x), self.area.y.saturating_add(y)),
+                    current,
+                ))
             })
             .collect()
     }
@@ -246,7 +258,10 @@ impl Buffer {
             }
             let x = index as u16 % width;
             let y = index as u16 / width;
-            visit(Point::new(x, y), current);
+            visit(
+                Point::new(self.area.x.saturating_add(x), self.area.y.saturating_add(y)),
+                current,
+            );
         }
     }
 
@@ -265,14 +280,18 @@ impl Buffer {
         if !self.area.contains(point) {
             return None;
         }
-        Some((point.y as usize * self.area.width as usize) + point.x as usize)
+        let x = usize::from(point.x - self.area.x);
+        let y = usize::from(point.y - self.area.y);
+        Some(y * usize::from(self.area.width) + x)
     }
 
     fn clip(&self, rect: Rect) -> Rect {
-        let x = rect.x.min(self.area.width);
-        let y = rect.y.min(self.area.height);
-        let right = rect.right().min(self.area.width);
-        let bottom = rect.bottom().min(self.area.height);
+        let area_right = self.area.right();
+        let area_bottom = self.area.bottom();
+        let x = rect.x.max(self.area.x).min(area_right);
+        let y = rect.y.max(self.area.y).min(area_bottom);
+        let right = rect.right().max(self.area.x).min(area_right);
+        let bottom = rect.bottom().max(self.area.y).min(area_bottom);
         Rect::new(x, y, right.saturating_sub(x), bottom.saturating_sub(y))
     }
 }
@@ -281,6 +300,24 @@ impl Buffer {
 mod tests {
     use super::{Buffer, Symbol};
     use crate::{Point, Rect, Style};
+
+    #[test]
+    fn nonzero_origin_maps_cells_and_diff_to_absolute_points() {
+        let area = Rect::new(5, 3, 4, 2);
+        let mut buffer = Buffer::new(area);
+        buffer.write_text(Point::new(5, 3), "ab", Style::default(), 4);
+        assert_eq!(buffer.cell(Point::new(5, 3)).unwrap().symbol.as_str(), "a");
+        assert_eq!(buffer.cell(Point::new(6, 3)).unwrap().symbol.as_str(), "b");
+        assert!(buffer.cell(Point::new(4, 3)).is_none());
+        assert!(buffer.cell(Point::new(5, 2)).is_none());
+
+        let blank = Buffer::new(area);
+        let changed = buffer.diff(&blank);
+        assert!(changed
+            .iter()
+            .any(|(point, cell)| *point == Point::new(5, 3) && cell.symbol.as_str() == "a"));
+        assert!(changed.iter().all(|(point, _)| point.y >= 3));
+    }
 
     #[test]
     fn wide_grapheme_marks_continuation_cells() {

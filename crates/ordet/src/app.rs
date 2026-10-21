@@ -1,8 +1,11 @@
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::Command as ProcessCommand;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
@@ -82,6 +85,42 @@ struct OrdetApp {
     next_recovery_write: Instant,
     next_autosave_at: Instant,
     recovered_at_startup: usize,
+    save_gates: HashMap<DraftId, Arc<SaveGate>>,
+    history_gate: Arc<SaveGate>,
+    recovery_gate: Arc<SaveGate>,
+}
+
+pub(super) struct SaveGate {
+    generation: AtomicU64,
+    write_lock: Mutex<()>,
+}
+
+impl SaveGate {
+    pub(super) fn new() -> Self {
+        Self {
+            generation: AtomicU64::new(0),
+            write_lock: Mutex::new(()),
+        }
+    }
+
+    pub(super) fn next_generation(&self) -> u64 {
+        self.generation.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    pub(super) fn run<T>(
+        &self,
+        generation: u64,
+        write: impl FnOnce() -> Result<T, TaskError>,
+    ) -> Result<T, TaskError> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.generation.load(Ordering::SeqCst) != generation {
+            return Err(TaskError::new("save superseded"));
+        }
+        write()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -202,17 +241,28 @@ impl OrdetApp {
         let mut recovered_start = 0usize;
         if recovered_count > 0 {
             let mut restored = Vec::new();
+            let mut restored_metadata = Vec::new();
             for draft in recovered {
-                let mut buffer = EditorBuffer::from_text(&draft.text);
+                let mut buffer = if draft.content_html.is_empty() {
+                    EditorBuffer::from_text(&draft.text)
+                } else {
+                    EditorBuffer::from_rich_text(&draft.text, &draft.content_html)
+                };
                 buffer.move_cursor_to_end();
                 restored.push((buffer, draft.path));
+                let defaults = DocumentMetadata::default();
+                restored_metadata.push(DocumentMetadata {
+                    status: draft.status.unwrap_or(defaults.status),
+                    auto_title: draft.auto_title.unwrap_or(defaults.auto_title),
+                    label_color: draft.label_color.unwrap_or(defaults.label_color),
+                });
             }
             if drafts.len() == 1 && is_empty_scratch(&drafts) {
                 drafts.clear();
             }
             recovered_start = drafts.len();
             drafts.extend(restored);
-            draft_metadata.resize(drafts.len(), DocumentMetadata::default());
+            draft_metadata.extend(restored_metadata);
         }
 
         let loaded_recent_files = recent_files;
@@ -317,6 +367,9 @@ impl OrdetApp {
             next_recovery_write: now + RECOVERY_INTERVAL,
             next_autosave_at: now + AUTOSAVE_DELAY,
             recovered_at_startup: recovered_count,
+            save_gates: HashMap::new(),
+            history_gate: Arc::new(SaveGate::new()),
+            recovery_gate: Arc::new(SaveGate::new()),
         })
     }
 
@@ -561,7 +614,11 @@ impl OrdetApp {
         if file.is_empty() {
             // Nothing unsaved: drop any snapshot left by an earlier session.
             if self.recovered_at_startup > 0 {
-                if let Err(error) = clear_recovery() {
+                let generation = self.recovery_gate.next_generation();
+                let cleared = self
+                    .recovery_gate
+                    .run(generation, || clear_recovery().map_err(TaskError::new));
+                if let Err(error) = cleared {
                     self.state
                         .set_status(format!("Recovery file could not be cleared: {error}"));
                 }
@@ -570,12 +627,14 @@ impl OrdetApp {
             return;
         }
 
+        let generation = self.recovery_gate.next_generation();
+        let gate = Arc::clone(&self.recovery_gate);
         self.tasks
             .spawn(Some(TaskKey::from("recovery")), move |token| {
                 if token.is_cancelled() {
                     return Err(TaskError::new("recovery write cancelled"));
                 }
-                save_recovery(&file).map_err(TaskError::new)?;
+                gate.run(generation, || save_recovery(&file).map_err(TaskError::new))?;
                 if token.is_cancelled() {
                     return Err(TaskError::new("recovery write cancelled"));
                 }
@@ -633,6 +692,8 @@ impl OrdetApp {
                     draft.editor.doc_status.clone(),
                     draft.editor.doc_auto_title,
                     draft.editor.doc_label_color.clone(),
+                    draft.editor.buffer.alignments().to_vec(),
+                    draft.editor.buffer.attrs().to_vec(),
                 ))
             });
             let Some((
@@ -644,6 +705,8 @@ impl OrdetApp {
                 doc_status,
                 doc_auto_title,
                 doc_label_color,
+                alignments,
+                attrs,
             )) = job
             else {
                 continue;
@@ -661,9 +724,13 @@ impl OrdetApp {
                     if let Some(draft) = self.state.drafts.get_mut(index) {
                         draft.editor.mark_saved(revision, path.clone());
                     }
-                    self.state
-                        .history
-                        .record(&history_key_for(&path), &plain_text, unix_now());
+                    self.state.history.record(
+                        &history_key_for(&path),
+                        &plain_text,
+                        &alignments,
+                        &attrs,
+                        unix_now(),
+                    );
                     self.state.remember_recent_path(path);
                 }
                 Err(_) => failed.push(title),
@@ -750,6 +817,8 @@ impl OrdetApp {
                     draft.editor.doc_status.clone(),
                     draft.editor.doc_auto_title,
                     draft.editor.doc_label_color.clone(),
+                    draft.editor.buffer.alignments().to_vec(),
+                    draft.editor.buffer.attrs().to_vec(),
                 ))
             });
             let Some((
@@ -761,6 +830,8 @@ impl OrdetApp {
                 doc_status,
                 doc_auto_title,
                 doc_label_color,
+                alignments,
+                attrs,
             )) = job
             else {
                 continue;
@@ -778,9 +849,13 @@ impl OrdetApp {
                     if let Some(draft) = self.state.drafts.get_mut(index) {
                         draft.editor.mark_saved(revision, path.clone());
                     }
-                    self.state
-                        .history
-                        .record(&history_key_for(&path), &plain_text, unix_now());
+                    self.state.history.record(
+                        &history_key_for(&path),
+                        &plain_text,
+                        &alignments,
+                        &attrs,
+                        unix_now(),
+                    );
                     self.state.remember_recent_path(path);
                 }
                 Err(_) => failed.push(title),
@@ -2410,8 +2485,8 @@ impl OrdetApp {
             .unwrap_or_default()
     }
 
-    /// Replace the buffer with the selected snapshot. Goes through
-    /// `select_all` + `insert_text`, so one undo brings the current text back.
+    /// Replace the buffer with the selected snapshot in one undo record,
+    /// including paragraph alignment and inline styles.
     fn restore_selected_revision(&mut self) {
         let revisions = self.active_file_revisions();
         if revisions.is_empty() {
@@ -2422,16 +2497,19 @@ impl OrdetApp {
         }
         let selected = self.state.panels.revision_selected.min(revisions.len() - 1);
         let revision = &revisions[selected];
-        if revision.text == self.state.editor().buffer.plain_text() {
+        let when = relative_time(unix_now(), revision.timestamp);
+        let text = revision.text.clone();
+        let alignments = revision.alignments.clone();
+        let attrs = revision.attrs.clone();
+        let editor = self.state.editor_mut();
+        if !editor
+            .buffer
+            .replace_with_rich_text(&text, &alignments, &attrs)
+        {
             self.state
                 .set_status_quiet("That revision already matches the draft.".to_string());
             return;
         }
-        let when = relative_time(unix_now(), revision.timestamp);
-        let text = revision.text.clone();
-        let editor = self.state.editor_mut();
-        editor.buffer.select_all();
-        editor.buffer.insert_text(&text);
         editor.mark_dirty();
         self.state.set_status(format!(
             "Restored the revision from {when}. Undo brings it back."
@@ -2646,6 +2724,7 @@ impl OrdetApp {
             Ok(message) => self.dispatch(UiEvent::Message(message)),
             Err(error)
                 if error.message == "save cancelled"
+                    || error.message == "save superseded"
                     || error.message == "open cancelled"
                     || error.message == "trash cancelled"
                     || error.message == "history write cancelled" => {}
@@ -2654,10 +2733,11 @@ impl OrdetApp {
                     if let Some(index) = self.state.draft_index_by_id(draft_id) {
                         self.state.drafts[index].editor.pending_save = false;
                     }
+                    self.state.ui.quit_after_save = false;
+                    self.pending_after_save = CloseIntent::None;
+                } else if task.key.as_ref().is_some_and(|key| key.0 == "open") {
+                    self.state.ui.pending_open = false;
                 }
-                self.state.ui.pending_open = false;
-                self.state.ui.quit_after_save = false;
-                self.pending_after_save = CloseIntent::None;
                 self.state
                     .set_status(format!("Background task failed: {error}"));
             }

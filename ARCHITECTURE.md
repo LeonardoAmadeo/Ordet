@@ -152,7 +152,7 @@ The help panel doubles as a lookup table: with it open, a command key scrolls to
 - cancellation tokens
 - error propagation back to the main loop
 
-The app runs every file operation through the pool so input and rendering stay responsive: saving, trashing, opening, writing a block to disk, reading a file into the cursor, and persisting the revision history. Each carries a `TaskKey`, so starting a new operation of the same kind cancels the one still in flight.
+The app runs every file operation through the pool so input and rendering stay responsive: saving, trashing, opening, writing a block to disk, reading a file into the cursor, and persisting the revision history. Each carries a `TaskKey`, so starting a new operation of the same kind cancels the one still in flight. Saves, history writes, and recovery snapshots also pass through per-resource write gates: a stale generation is skipped, and the newest write wins.
 
 A task that finishes after its draft moved on is discarded rather than applied: `AppMessage::ReadFileCompleted` checks both the draft index and the revision before touching the buffer.
 
@@ -192,7 +192,7 @@ Undo records hold inverse operations (`Insert { at, text }` / `Remove { start, e
 
 `workspace.rs` scans registered folders for `.ord`/`.txt`/`.md` (one sublevel deep, hidden and build dirs skipped, capped) into `WorkspaceFile { path, relative }`. `WorkspaceScanCache` memoises scans behind the newest directory mtime plus a 2-second max age, so a frame never touches the filesystem. The Workspace panel shows per-folder unsaved/total counts; the Pages panel numbers the open drafts, the same order the header's `Pg n/m` reads, the window list follows, and `Alt-Up`/`Alt-Down` reorder (hidden scratch drafts are skipped, never pages). Folders persist in settings; renames invalidate the cache.
 
-`history.rs` snapshots saved text per file (20 deep, 200KB cap, identical consecutive saves coalesced) into `history.json` next to settings, written atomically off the main loop. The Revisions panel lists snapshots newest-first with word deltas, diffs the selection against the buffer with a prefix/suffix-trimmed line diff, and restores through `select_all` + `insert_text` so one undo returns.
+`history.rs` snapshots saved text, paragraph alignment, and inline styles per file (20 deep, 200KB cap, identical consecutive saves coalesced) into `history.json` next to settings, written atomically off the main loop. The Revisions panel lists snapshots newest-first with word deltas, diffs the selection against the buffer with a prefix/suffix-trimmed line diff, and restores through `replace_with_rich_text` so one undo returns. Older plain-text snapshots still load.
 
 ## 10. Configuration
 
@@ -237,6 +237,6 @@ The word processor UI covers:
 
 - Untouched lines carry a lazy integer shift rather than eagerly rewritten offsets: an edit costs what it touched, at the price that reading a cached line must fold its pending shift in first.
 - The revision history stores full text per save rather than deltas; the per-file cap and size limit bound it.
-- The history and recovery snapshots keep plain text only: alignment rides along for live drafts, not for restored ones.
+- History and recovery snapshots keep text, paragraph alignment, inline styles, and document metadata; older plain-text snapshots still load.
 - Background tasks use threads and channels instead of a larger async runtime. That keeps the core small and portable.
 - Mouse clicks behind modals and on the welcome screen are ignored rather than handled.

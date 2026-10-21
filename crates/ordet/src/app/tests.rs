@@ -5,17 +5,18 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ordet_format::{read_from_path, write_to_path, OrdetDocument};
 
 use super::cli::{parse_cli_args, CliAction};
+use super::helpers::save_task_key;
 use super::{
     load_buffer_from_path, load_plain_text_from_path, parse_alignment_input,
     parse_browser_target_input, parse_pasted_single_path, parse_word_target,
-    suggest_copy_destination, unique_trash_destination, OrdetApp,
+    suggest_copy_destination, unique_trash_destination, CloseIntent, OrdetApp, SaveGate,
 };
-use crate::commands::Command;
+use crate::commands::{AppMessage, Command};
 use crate::editor_buffer::{EditorBuffer, ParagraphAlignment};
 use crate::state::PanelKind;
 use crate::state::{AppState, HelpTab};
 use crate::theme::ThemeSelection;
-use ordet_tui_framework::{Rect, UiEvent};
+use ordet_tui_framework::{Rect, TaskError, TaskHandle, TaskKey, TaskResult, UiEvent};
 
 #[test]
 fn esc_leaves_welcome_help_on_the_first_press() {
@@ -2017,6 +2018,10 @@ fn recovered_drafts_stay_dirty_when_the_launch_opens_files() {
                     path: None,
                     title: "Untitled".to_string(),
                     text: "words the crash did not eat".to_string(),
+                    content_html: "<p><b>words</b> the crash did not eat</p>".to_string(),
+                    status: Some("Draft".to_string()),
+                    auto_title: Some(true),
+                    label_color: Some(String::new()),
                 }],
             },
         )
@@ -2043,6 +2048,14 @@ fn recovered_drafts_stay_dirty_when_the_launch_opens_files() {
             "the recovered draft must remain marked unsaved"
         );
         assert_eq!(snapshot[0].text, "words the crash did not eat");
+        assert!(
+            app.state.drafts.iter().any(|draft| draft
+                .editor
+                .buffer
+                .to_ord_html()
+                .contains("<b>words</b>")),
+            "recovered inline formatting must survive the restart"
+        );
     });
 }
 
@@ -3140,4 +3153,102 @@ fn test_notes_wheel_scroll_stays_until_cursor_moves() {
     app.state.notes_mut().ensure_cursor_visible(30, 20);
     assert!(app.state.notes().free_scroll_at.is_none());
     assert_eq!(app.state.notes().scroll, 1);
+}
+
+#[test]
+fn save_gate_serializes_writes_and_the_latest_generation_wins() {
+    use std::sync::mpsc;
+    use std::sync::Arc;
+
+    let gate = Arc::new(SaveGate::new());
+    let first_generation = gate.next_generation();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let first_gate = Arc::clone(&gate);
+    let first = std::thread::spawn(move || {
+        first_gate.run(first_generation, move || {
+            entered_tx.send(()).expect("signal first writer");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            Ok::<_, TaskError>(1)
+        })
+    });
+    entered_rx.recv().expect("first writer entered");
+
+    let second_generation = gate.next_generation();
+    let second_gate = Arc::clone(&gate);
+    let second = std::thread::spawn(move || second_gate.run(second_generation, || Ok(2)));
+
+    assert_eq!(first.join().expect("first thread").expect("first write"), 1);
+    assert_eq!(
+        second.join().expect("second thread").expect("second write"),
+        2
+    );
+}
+
+#[test]
+fn a_stale_save_generation_is_superseded() {
+    let gate = SaveGate::new();
+    let first = gate.next_generation();
+    let _second = gate.next_generation();
+    let error = gate
+        .run(first, || Ok::<_, TaskError>(()))
+        .expect_err("stale generation must not write");
+    assert_eq!(error.message, "save superseded");
+}
+
+#[test]
+fn an_open_failure_only_clears_open_state() {
+    let mut app =
+        with_test_settings(|| OrdetApp::from_args(Vec::new()).expect("app with scratch draft"));
+    app.state.ui.pending_open = true;
+    app.state.ui.quit_after_save = true;
+    app.pending_after_save = CloseIntent::Exit;
+    app.handle_task_result(TaskResult {
+        handle: TaskHandle(0),
+        key: Some(TaskKey::from("open")),
+        result: Err(TaskError::new("boom")),
+    });
+    assert!(!app.state.ui.pending_open);
+    assert!(app.state.ui.quit_after_save);
+    assert_eq!(app.pending_after_save, CloseIntent::Exit);
+}
+
+#[test]
+fn a_save_failure_clears_save_intent_without_clearing_open_state() {
+    let mut app =
+        with_test_settings(|| OrdetApp::from_args(Vec::new()).expect("app with scratch draft"));
+    let draft_id = app.state.active_draft_id();
+    app.state.editor_mut().pending_save = true;
+    app.state.ui.pending_open = true;
+    app.state.ui.quit_after_save = true;
+    app.pending_after_save = CloseIntent::Exit;
+    app.handle_task_result(TaskResult {
+        handle: TaskHandle(0),
+        key: Some(save_task_key(draft_id)),
+        result: Err(TaskError::new("boom")),
+    });
+    assert!(!app.state.editor().pending_save);
+    assert!(app.state.ui.pending_open);
+    assert!(!app.state.ui.quit_after_save);
+    assert_eq!(app.pending_after_save, CloseIntent::None);
+}
+
+#[test]
+fn a_stale_save_cannot_close_or_quit_over_newer_edits() {
+    let mut app =
+        with_test_settings(|| OrdetApp::from_args(Vec::new()).expect("app with scratch draft"));
+    let draft_id = app.state.active_draft_id();
+    app.state.editor_mut().mark_dirty();
+    app.state.editor_mut().mark_dirty();
+    app.state.ui.quit_after_save = true;
+    app.pending_after_save = CloseIntent::Exit;
+
+    app.apply_message(AppMessage::SaveCompleted {
+        draft_id,
+        path: unique_temp_path("ordet-stale-save", "ord"),
+        revision: 1,
+    });
+
+    assert!(!app.state.ui.should_quit);
+    assert!(app.state.ui.quit_after_save);
+    assert_eq!(app.pending_after_save, CloseIntent::Exit);
 }
