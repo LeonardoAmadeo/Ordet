@@ -4525,7 +4525,7 @@ fn handle_text_buffer_command(
         Command::BlockQuote => buffer.apply_block_prefix(crate::editor_buffer::BlockPrefix::Quote),
         Command::BlockBody => buffer.apply_block_prefix(crate::editor_buffer::BlockPrefix::Body),
         Command::InsertTimestamp => {
-            let stamp = crate::app::local_timestamp();
+            let stamp = crate::app::helpers::local_timestamp();
             if stamp.is_empty() {
                 false
             } else {
