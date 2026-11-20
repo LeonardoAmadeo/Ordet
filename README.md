@@ -23,12 +23,6 @@ The name comes from Kaj Munk's play and Carl Theodor Dreyer's film *Ordet* (Dani
 
 ---
 
-## Demo
-
-![Ordet demo](demo.gif)
-
----
-
 ## Installation
 
 ### Requirements
