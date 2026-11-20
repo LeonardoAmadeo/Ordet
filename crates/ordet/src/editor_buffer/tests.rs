@@ -320,12 +320,12 @@ fn cache_direct_movement_matches_full_layout() {
                 "line/col at {cursor} w={width}"
             );
         }
-        for visual in 0..layout.lines.len() {
+        for (visual, line) in layout.lines.iter().enumerate() {
             let mut buffer = EditorBuffer::from_text(text);
             buffer.move_to_line(visual + 1, width);
             assert_eq!(
                 buffer.cursor(),
-                layout.lines[visual].start_char,
+                line.start_char,
                 "go-to-line {} w={width}",
                 visual + 1
             );
