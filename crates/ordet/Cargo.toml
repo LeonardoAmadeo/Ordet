@@ -16,7 +16,7 @@ path = "src/main.rs"
 [dependencies]
 base64 = "0.22"
 crossterm = "0.28"
-dirs = "5"
+dirs = "7"
 dunce = "1"
 ordet-format = { version = "0.1.0", path = "../ordet-format" }
 ordet-tui-framework = { version = "0.1.0", path = "../ordet-tui-framework" }
