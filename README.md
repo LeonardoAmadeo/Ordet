@@ -37,7 +37,13 @@ The name comes from Kaj Munk's play and Carl Theodor Dreyer's film *Ordet* (Dani
 - A UTF-8 terminal emulator
 - *Optional (Linux):* `wl-copy` (Wayland) or `xclip` / `xsel` (X11) for the system clipboard bridge
 
-### Build and Install
+### From crates.io
+
+```sh
+cargo install ordet
+```
+
+### From source
 
 ```sh
 git clone https://github.com/LeonardoAmadeo/ordet.git
