@@ -6,6 +6,8 @@ license.workspace = true
 repository.workspace = true
 description = "Terminal-first Ordet word processor binary"
 readme = "../../README.md"
+keywords = ["tui", "word-processor", "terminal", "writing", "editor"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "ordet"
@@ -16,8 +18,8 @@ base64 = "0.22"
 crossterm = "0.28"
 dirs = "5"
 dunce = "1"
-ordet-format = { path = "../ordet-format" }
-ordet-tui-framework = { path = "../ordet-tui-framework" }
+ordet-format = { version = "0.1.0", path = "../ordet-format" }
+ordet-tui-framework = { version = "0.1.0", path = "../ordet-tui-framework" }
 regex = "1.12"
 ropey = "1.6"
 serde = { version = "1", features = ["derive"] }
