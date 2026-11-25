@@ -1,41 +1,26 @@
 # Ordet
 
-A terminal word processor written in Rust, built on its own TUI framework (`ordet-tui-framework`). Runs locally with no network requests.
+Ordet is a terminal word processor written in Rust. It runs completely offline on top of its own TUI framework (`ordet-tui-framework`) and saves documents as `.ord`, plain text, or Markdown.
 
 ![Ordet demo](docs/ordet-loop.gif)
 
-## What it does
-
-- Paragraph alignment, inline styles, margin ruler, word/character counts, and word targets
-- Up to four tiled split windows (`Alt-N` to split, `F6` to cycle, `Alt-W` to close)
-- `Ctrl-K` and `Ctrl-O` prefix chords alongside standard arrow-key editing
-- Find and replace with plain, regex (`Alt-R`), whole-word (`Alt-W`), and case-sensitive (`Alt-C`) modes
-- Block marking (copy, move, delete, or write a block to a file)
-- Workspace folder browser and a side Notes panel
-- Autosave, crash recovery snapshots, backups, and revision history
-- Built-in color themes plus system dark/light mode detection
-- System clipboard sync (`pbcopy`, `wl-copy`/`xclip`/`xsel`, `arboard`, WSL `clip.exe`) and OSC 52 over SSH
-- Saves as `.ord`, plain text, or Markdown
+It is built for writing long-form prose in the terminal: paragraph alignment, inline styles, a margin ruler, word counts and targets, a workspace browser, a side Notes panel, and up to four split windows. Autosave, crash recovery, backups, and revision history run in the background, and clipboard sync works natively on macOS, Linux (Wayland/X11/WSL), and Windows, as well as over SSH via OSC 52.
 
 ## Install
 
-Requires a stable [Rust toolchain](https://rustup.rs/) and a UTF-8 terminal. On Linux, install `wl-copy`/`wl-paste` (Wayland) or `xclip`/`xsel` (X11) if you want system clipboard support.
-
-From crates.io:
+Ordet requires a stable [Rust toolchain](https://rustup.rs/) and a UTF-8 terminal. On Linux, `wl-copy`/`wl-paste` (Wayland) or `xclip`/`xsel` (X11) are used for the system clipboard when available.
 
 ```sh
 cargo install ordet
 ```
 
-From source:
+Or build from source:
 
 ```sh
 git clone https://github.com/LeonardoAmadeo/Ordet.git
 cd Ordet
 cargo install --path crates/ordet --locked
 ```
-
-Make sure `~/.cargo/bin` is in your `PATH`.
 
 ## Usage
 
@@ -44,61 +29,38 @@ ordet                        # Open a blank draft
 ordet draft.ord notes.txt    # Open one or more files
 ```
 
-Options:
+Common flags: `--config <path>`, `--print-config`, `--reset-config`, `--latency-log`, `-h`/`--help`, `-V`/`--version`.
 
-| Flag | Effect |
-| :--- | :--- |
-| `--config <path>` | Use a specific settings file |
-| `--print-config` | Print effective settings as JSON and exit |
-| `--reset-config` | Overwrite settings with defaults and exit |
-| `--latency-log` | Print keystroke latency percentiles to stderr on exit |
-| `-h`, `--help` | Show help |
-| `-V`, `--version` | Show version |
+## Shortcuts
 
-## Key shortcuts
-
-Press `F1` inside Ordet for the full shortcut list.
+Press `F1` inside Ordet for the complete key reference, or `F10` to open the menu bar.
 
 | Key | Action |
 | :--- | :--- |
-| `F1` | Shortcut guide |
-| `F2` | Settings |
-| `F6` | Cycle windows / pages |
-| `F10` | Menu bar |
+| `F1` / `F2` / `F10` | Help / Settings / Menu bar |
+| `F6` | Cycle windows or pages |
+| `Alt-N` / `Alt-W` | New split window / Close window |
 | `Ctrl-S` / `Ctrl-Shift-S` | Save / Save As |
-| `Ctrl-F` | Find |
+| `Ctrl-F` | Find (toggle regex `Alt-R`, whole word `Alt-W`, case `Alt-C`) |
 | `Ctrl-Z` / `Ctrl-Shift-Z` | Undo / Redo |
 | `Ctrl-X` / `Ctrl-C` / `Ctrl-V` | Cut / Copy / Paste |
-| `Alt-N` / `Alt-W` | New split window / Close window |
-| `Ctrl-Q` | Quit |
-| `Esc` | Close active panel or modal |
-
-Prefix chords:
-- `Ctrl-K`: block operations, bookmarks, save and close (`Ctrl-K H`), file commands
-- `Ctrl-O`: alignment — left (`Ctrl-O L`), center (`Ctrl-O C`), right (`Ctrl-O R`), justify (`Ctrl-O J`)
+| `Ctrl-K` / `Ctrl-O` | Block & file chords / Paragraph alignment chords |
+| `Ctrl-Q` / `Esc` | Quit / Close panel or modal |
 
 ## Configuration
 
-Settings are stored as JSON (editable in-app with `F2`):
+Settings, crash recovery (`recovery.json`), and revision history (`history.json`) are stored in a single directory and can be edited in-app via `F2`:
 
-- **macOS:** `~/Library/Application Support/ordet-tui/settings.json`
-- **Linux:** `$XDG_CONFIG_HOME/ordet-tui/settings.json` (default `~/.config/ordet-tui/settings.json`)
-- **Windows:** `%APPDATA%\ordet-tui\settings.json`
+- macOS: `~/Library/Application Support/ordet-tui/settings.json`
+- Linux: `$XDG_CONFIG_HOME/ordet-tui/settings.json` (or `~/.config/ordet-tui/settings.json`)
+- Windows: `%APPDATA%\ordet-tui\settings.json`
 
-`recovery.json` and `history.json` are stored in the same directory.
+## Project structure
 
-## Workspace layout
+The workspace has three crates: `crates/ordet` (the word processor), `crates/ordet-tui-framework` (the custom ANSI diff renderer, buffer, layout, keymap, focus, and task pool), and `crates/ordet-format` (`.ord` parsing, serialization, and atomic writes).
 
-- `crates/ordet` — the word processor binary
-- `crates/ordet-tui-framework` — low-level TUI framework (ANSI diff renderer, buffer, layout, keymap, focus, task pool)
-- `crates/ordet-format` — `.ord` file parser, serializer, and atomic file writes
-
-## Platform notes
-
-- **macOS:** Primary development platform.
-- **Linux:** Built and tested in CI under a PTY. Supports Wayland/X11/WSL clipboards, GNOME/KDE/GTK/`COLORFGBG` theme detection, and FreeDesktop Trash.
-- **Windows:** Built and tested in CI under ConPTY. Works best in Windows Terminal or WezTerm.
+Ordet is developed on macOS and tested in CI on macOS, Linux (PTY), and Windows (ConPTY — Windows Terminal or WezTerm recommended).
 
 ## License
 
-Dual-licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
+Dual-licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT).
