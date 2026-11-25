@@ -1,151 +1,104 @@
 # Ordet
 
-**A fast, distraction-free terminal word processor written in Rust — built on its own GPUI-inspired TUI framework.**
+A terminal word processor written in Rust, built on its own TUI framework (`ordet-tui-framework`). Runs locally with no network requests.
 
-Ordet is local-first, offline-only, and engineered for sub-millisecond keystroke latency on large documents. Rather than wrapping `ratatui`, it runs on [`ordet-tui-framework`](crates/ordet-tui-framework/README.md): a custom, event-driven terminal engine with coalescing ANSI diff rendering, explicit layout, conflict-checked keymaps, and panic-isolated background tasks.
+![Ordet demo](docs/ordet-loop.gif)
 
-![Ordet terminal word processor demo](docs/ordet-loop.gif)
+## What it does
 
----
+- Paragraph alignment, inline styles, margin ruler, word/character counts, and word targets
+- Up to four tiled split windows (`Alt-N` to split, `F6` to cycle, `Alt-W` to close)
+- `Ctrl-K` and `Ctrl-O` prefix chords alongside standard arrow-key editing
+- Find and replace with plain, regex (`Alt-R`), whole-word (`Alt-W`), and case-sensitive (`Alt-C`) modes
+- Block marking (copy, move, delete, or write a block to a file)
+- Workspace folder browser and a side Notes panel
+- Autosave, crash recovery snapshots, backups, and revision history
+- Built-in color themes plus system dark/light mode detection
+- System clipboard sync (`pbcopy`, `wl-copy`/`xclip`/`xsel`, `arboard`, WSL `clip.exe`) and OSC 52 over SSH
+- Saves as `.ord`, plain text, or Markdown
 
-## Why Ordet?
+## Install
 
-- **Built for prose, not just code:** Paragraph alignment, character styles, a live margin ruler, word/character counts, and word target goals.
-- **Fast on large files:** Rope-backed editing (`ropey`), incremental wrap/stats caching, and zero-allocation frame diffing keep typing under ~0.15 ms/frame even at 50,000 lines.
-- **Split-screen writing:** Tile up to four documents side by side in a responsive grid, each with its own ruler and title bar.
-- **Zero data loss:** Background autosave, crash recovery snapshots, revision history with diff/restore, and atomic file writes.
-- **Cross-platform:** Native builds and CI verification on macOS, Linux, and Windows (including WSL clipboard bridging and OSC 52 over SSH).
+Requires a stable [Rust toolchain](https://rustup.rs/) and a UTF-8 terminal. On Linux, install `wl-copy`/`wl-paste` (Wayland) or `xclip`/`xsel` (X11) if you want system clipboard support.
 
----
-
-## Features
-
-- **Writing Canvas:** Paragraph and inline styles, margin ruler, live word/character counts, and word count targets.
-- **Tiled Windows:** Up to four split panes (`Alt-N` to split, `F6` to cycle, `Alt-W` to close).
-- **Classic Chords & Modern Keys:** `Ctrl-K` and `Ctrl-O` prefix chords alongside standard arrow/selection navigation.
-- **Search & Replace:** Plain, regex (`Alt-R`), whole-word (`Alt-W`), and case-sensitive (`Alt-C`) modes.
-- **Block Operations:** Mark regions to copy, move, delete, or export directly to another file.
-- **Themes:** Curated dark, light, and system-adaptive palettes (*Midnight*, *Stalker*, *Persona*, *In the Mood for Love*, *Amber*, and more).
-- **System Clipboard:** Native OS clipboard integration (`pbcopy`/`pbpaste`, `wl-copy`/`xclip`/`xsel`, `arboard`, WSL `clip.exe`) plus OSC 52 for SSH sessions.
-- **Open Formats:** Saves as `.ord` or plain text / Markdown.
-
----
-
-## Installation
-
-### Requirements
-
-- Stable [Rust toolchain](https://rustup.rs/)
-- A UTF-8 terminal emulator (truecolor recommended)
-- *Optional (Linux):* `wl-copy` / `wl-paste` (Wayland) or `xclip` / `xsel` (X11) for native clipboard sync
-
-### From crates.io
+From crates.io:
 
 ```sh
 cargo install ordet
 ```
 
-### From source
+From source:
 
 ```sh
-git clone https://github.com/LeonardoAmadeo/ordet.git
-cd ordet
+git clone https://github.com/LeonardoAmadeo/Ordet.git
+cd Ordet
 cargo install --path crates/ordet --locked
 ```
 
-Ensure `~/.cargo/bin` is in your `PATH`.
-
----
+Make sure `~/.cargo/bin` is in your `PATH`.
 
 ## Usage
 
 ```sh
-ordet                        # Open with a blank draft
+ordet                        # Open a blank draft
 ordet draft.ord notes.txt    # Open one or more files
 ```
 
-| Flag              | Description                                   |
-| :---------------- | :-------------------------------------------- |
-| `--config <path>` | Use a custom settings file                    |
-| `--print-config`  | Print effective settings as JSON and exit     |
-| `--reset-config`  | Reset settings to defaults and exit           |
-| `--latency-log`   | Print keystroke latency percentiles on exit   |
-| `-h`, `--help`    | Show CLI help                                 |
-| `-V`, `--version` | Show version                                  |
+Options:
 
----
+| Flag | Effect |
+| :--- | :--- |
+| `--config <path>` | Use a specific settings file |
+| `--print-config` | Print effective settings as JSON and exit |
+| `--reset-config` | Overwrite settings with defaults and exit |
+| `--latency-log` | Print keystroke latency percentiles to stderr on exit |
+| `-h`, `--help` | Show help |
+| `-V`, `--version` | Show version |
 
-## Essential Shortcuts
+## Key shortcuts
 
-Press `F1` inside Ordet for the full interactive shortcut guide.
+Press `F1` inside Ordet for the full shortcut list.
 
-| Shortcut                       | Action                               |
-| :----------------------------- | :----------------------------------- |
-| `F1`                           | Interactive shortcut guide           |
-| `F2`                           | Settings (themes, preferences)       |
-| `F6`                           | Cycle split windows / pages          |
-| `F10`                          | Top menu bar                         |
-| `Ctrl-S` / `Ctrl-Shift-S`      | Save / Save As                       |
-| `Ctrl-F`                       | Find                                 |
-| `Ctrl-Z` / `Ctrl-Shift-Z`      | Undo / Redo                          |
-| `Ctrl-X` / `Ctrl-C` / `Ctrl-V` | Cut / Copy / Paste                   |
-| `Alt-N` / `Alt-W`              | Open new split window / Close window |
-| `Ctrl-Q`                       | Quit                                 |
-| `Esc`                          | Dismiss topmost panel or modal       |
+| Key | Action |
+| :--- | :--- |
+| `F1` | Shortcut guide |
+| `F2` | Settings |
+| `F6` | Cycle windows / pages |
+| `F10` | Menu bar |
+| `Ctrl-S` / `Ctrl-Shift-S` | Save / Save As |
+| `Ctrl-F` | Find |
+| `Ctrl-Z` / `Ctrl-Shift-Z` | Undo / Redo |
+| `Ctrl-X` / `Ctrl-C` / `Ctrl-V` | Cut / Copy / Paste |
+| `Alt-N` / `Alt-W` | New split window / Close window |
+| `Ctrl-Q` | Quit |
+| `Esc` | Close active panel or modal |
 
-**Prefix chords:**
-- `Ctrl-K`: block operations, bookmarks, save & close (`Ctrl-K H`), and file commands.
-- `Ctrl-O`: paragraph alignment — left (`Ctrl-O L`), center (`Ctrl-O C`), right (`Ctrl-O R`), justify (`Ctrl-O J`).
-
----
-
-## Workspace & `ordet-tui-framework`
-
-This repository is organized as a Cargo workspace:
-
-| Crate | Purpose |
-| :---- | :------ |
-| [`crates/ordet`](crates/ordet) | The Ordet word processor binary |
-| [`crates/ordet-tui-framework`](crates/ordet-tui-framework) | Standalone, GPUI-inspired TUI engine (coalescing ANSI renderer, Unicode buffer, layout, keymaps, focus, task pool) |
-| [`crates/ordet-format`](crates/ordet-format) | `.ord` document parser, serializer, and atomic file writer |
-
-You can try the framework standalone with its included example:
-
-```sh
-cargo run -p ordet-tui-framework --example counter
-```
-
----
+Prefix chords:
+- `Ctrl-K`: block operations, bookmarks, save and close (`Ctrl-K H`), file commands
+- `Ctrl-O`: alignment — left (`Ctrl-O L`), center (`Ctrl-O C`), right (`Ctrl-O R`), justify (`Ctrl-O J`)
 
 ## Configuration
 
-Settings are stored as JSON and editable in-app via `F2`:
+Settings are stored as JSON (editable in-app with `F2`):
 
-| OS          | Default Path                                                                          |
-| :---------- | :------------------------------------------------------------------------------------ |
-| **macOS**   | `~/Library/Application Support/ordet-tui/settings.json`                               |
-| **Linux**   | `$XDG_CONFIG_HOME/ordet-tui/settings.json` *(or `~/.config/ordet-tui/settings.json`)* |
-| **Windows** | `%APPDATA%\ordet-tui\settings.json`                                                   |
+- **macOS:** `~/Library/Application Support/ordet-tui/settings.json`
+- **Linux:** `$XDG_CONFIG_HOME/ordet-tui/settings.json` (default `~/.config/ordet-tui/settings.json`)
+- **Windows:** `%APPDATA%\ordet-tui\settings.json`
 
-Crash recovery (`recovery.json`) and revision history (`history.json`) live in the same directory.
+`recovery.json` and `history.json` are stored in the same directory.
 
----
+## Workspace layout
 
-## Platform Support
+- `crates/ordet` — the word processor binary
+- `crates/ordet-tui-framework` — low-level TUI framework (ANSI diff renderer, buffer, layout, keymap, focus, task pool)
+- `crates/ordet-format` — `.ord` file parser, serializer, and atomic file writes
 
-| Platform    | Status                                                                                                             |
-| :---------- | :----------------------------------------------------------------------------------------------------------------- |
-| **macOS**   | Primary development platform; full native clipboard, dark mode, and Trash support.                                 |
-| **Linux**   | CI-verified with PTY smoke tests; Wayland/X11/WSL clipboard, GNOME/KDE/GTK/`COLORFGBG` dark mode, FreeDesktop Trash. |
-| **Windows** | CI-verified with ConPTY smoke tests; `arboard` clipboard, Registry dark mode, retry-hardened atomic saves. Best in Windows Terminal or WezTerm. |
+## Platform notes
 
----
+- **macOS:** Primary development platform.
+- **Linux:** Built and tested in CI under a PTY. Supports Wayland/X11/WSL clipboards, GNOME/KDE/GTK/`COLORFGBG` theme detection, and FreeDesktop Trash.
+- **Windows:** Built and tested in CI under ConPTY. Works best in Windows Terminal or WezTerm.
 
 ## License
 
-Dual-licensed under either of:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
+Dual-licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
