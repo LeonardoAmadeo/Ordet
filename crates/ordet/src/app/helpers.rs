@@ -170,18 +170,32 @@ pub(super) fn parse_pasted_path_candidates(input: &str) -> Vec<String> {
         if let Some(index) = line.find("file://") {
             candidates.push(line[index..].to_string());
         }
-        if line.starts_with('/') || line.starts_with('~') {
+        if line.starts_with('/') || line.starts_with('~') || looks_like_windows_path(line) {
             candidates.push(line.to_string());
         }
 
         for token in line.split_whitespace() {
-            if token.starts_with("file://") || token.starts_with('/') || token.starts_with('~') {
+            if token.starts_with("file://")
+                || token.starts_with('/')
+                || token.starts_with('~')
+                || looks_like_windows_path(token)
+            {
                 candidates.push(token.to_string());
             }
         }
     }
 
     candidates
+}
+
+fn looks_like_windows_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let is_drive = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/');
+    let is_unc = value.starts_with("\\\\");
+    is_drive || is_unc
 }
 
 pub(super) fn resolve_existing_pasted_path_candidate(candidates: &[String]) -> Option<PathBuf> {
@@ -426,6 +440,7 @@ pub(super) fn save_task_key(draft_id: DraftId) -> TaskKey {
 /// shortcuts instead of typable text. Terminals with Meta mode are
 /// unaffected either way, and dead-key accents that terminals compose
 /// themselves never arrive here as lone characters.
+#[cfg(any(target_os = "macos", test))]
 pub(super) fn normalize_macos_option_key(key: KeyEvent) -> KeyEvent {
     if key.modifiers != KeyModifiers::NONE {
         return key;
@@ -511,17 +526,70 @@ pub(super) fn move_path_to_trash(path: &Path) -> io::Result<PathBuf> {
     fs::create_dir_all(&trash_dir)?;
     let destination = unique_trash_destination(&trash_dir, path);
     if let Err(rename_error) = fs::rename(path, &destination) {
-        // The file may live on another volume (common on Windows). Copy it
-        // into the trash, then remove the source only after the copy lands.
-        if fs::copy(path, &destination).is_err() {
+        // The file or folder may live on another volume (common on Windows and
+        // multi-mount Linux systems). Copy it into the trash, then remove the
+        // source only after the copy lands.
+        let is_dir = path.is_dir();
+        if copy_path(path, &destination, is_dir).is_err() {
             return Err(rename_error);
         }
-        if let Err(remove_error) = fs::remove_file(path) {
-            let _ = fs::remove_file(&destination);
+        let remove_result = if is_dir {
+            fs::remove_dir_all(path)
+        } else {
+            fs::remove_file(path)
+        };
+        if let Err(remove_error) = remove_result {
+            if is_dir {
+                let _ = fs::remove_dir_all(&destination);
+            } else {
+                let _ = fs::remove_file(&destination);
+            }
             return Err(remove_error);
         }
     }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    write_freedesktop_trashinfo(&trash_dir, path, &destination);
     Ok(destination)
+}
+
+/// Writes a best-effort FreeDesktop.org `.trashinfo` companion file so Linux
+/// file managers (Nautilus, Dolphin, Thunar) can inspect and restore trashed
+/// items.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn write_freedesktop_trashinfo(files_dir: &Path, original: &Path, destination: &Path) {
+    let Some(trash_root) = files_dir.parent() else {
+        return;
+    };
+    let Some(name) = destination.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let info_dir = trash_root.join("info");
+    if fs::create_dir_all(&info_dir).is_err() {
+        return;
+    }
+    let abs_original = fs::canonicalize(original).unwrap_or_else(|_| original.to_path_buf());
+    let encoded_path = abs_original
+        .to_string_lossy()
+        .split('/')
+        .map(|segment| urlencoding::encode(segment).into_owned())
+        .collect::<Vec<_>>()
+        .join("/");
+    let deletion_date = time::OffsetDateTime::now_local()
+        .or_else(|_| Ok::<_, time::error::IndeterminateOffset>(time::OffsetDateTime::now_utc()))
+        .map(|now| {
+            format!(
+                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+                now.year(),
+                u8::from(now.month()),
+                now.day(),
+                now.hour(),
+                now.minute(),
+                now.second()
+            )
+        })
+        .unwrap_or_else(|_| "1970-01-01T00:00:00".to_string());
+    let body = format!("[Trash Info]\nPath={encoded_path}\nDeletionDate={deletion_date}\n");
+    let _ = fs::write(info_dir.join(format!("{name}.trashinfo")), body);
 }
 
 pub(super) fn trash_directory() -> io::Result<PathBuf> {
@@ -630,30 +698,101 @@ pub(crate) fn local_timestamp() -> String {
 pub(super) fn detect_system_dark_mode() -> Option<bool> {
     #[cfg(target_os = "macos")]
     {
-        let output = ProcessCommand::new("defaults")
+        if let Ok(output) = ProcessCommand::new("defaults")
             .args(["read", "-g", "AppleInterfaceStyle"])
             .output()
-            .ok()?;
-        if !output.status.success() {
-            return Some(false);
+        {
+            if !output.status.success() {
+                return Some(false);
+            }
+            let value = String::from_utf8_lossy(&output.stdout);
+            return Some(value.trim().eq_ignore_ascii_case("dark"));
         }
-        let value = String::from_utf8_lossy(&output.stdout);
-        return Some(value.trim().eq_ignore_ascii_case("dark"));
     }
 
     #[cfg(target_os = "windows")]
     {
         use winreg::enums::HKEY_CURRENT_USER;
 
-        let personalize = winreg::RegKey::predef(HKEY_CURRENT_USER)
+        if let Ok(personalize) = winreg::RegKey::predef(HKEY_CURRENT_USER)
             .open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize")
-            .ok()?;
-        let apps_use_light_theme: u32 = personalize.get_value("AppsUseLightTheme").ok()?;
-        return Some(apps_use_light_theme == 0);
+        {
+            if let Ok(apps_use_light_theme) = personalize.get_value::<u32, _>("AppsUseLightTheme") {
+                return Some(apps_use_light_theme == 0);
+            }
+        }
     }
 
-    #[allow(unreachable_code)]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(dark) = detect_linux_dark_mode() {
+            return Some(dark);
+        }
+    }
+
+    detect_colorfgbg_dark_mode(std::env::var("COLORFGBG").ok().as_deref())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn detect_linux_dark_mode() -> Option<bool> {
+    // 1. GTK_THEME environment variable (e.g. "Adwaita:dark" or "Breeze-Dark").
+    if let Ok(theme) = std::env::var("GTK_THEME") {
+        let lower = theme.to_ascii_lowercase();
+        if lower.ends_with(":dark") || lower.ends_with("-dark") || lower.contains("dark") {
+            return Some(true);
+        }
+        if lower.ends_with(":light") || lower.ends_with("-light") {
+            return Some(false);
+        }
+    }
+
+    // 2. GNOME / FreeDesktop gsettings color-scheme.
+    if let Ok(output) = ProcessCommand::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+        .output()
+    {
+        if output.status.success() {
+            let value = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+            if value.contains("prefer-dark") {
+                return Some(true);
+            }
+            if value.contains("prefer-light") || value.contains("default") {
+                return Some(false);
+            }
+        }
+    }
+
+    // 3. KDE Plasma kdeglobals ColorScheme.
+    if let Some(config_dir) = dirs::config_dir() {
+        if let Ok(contents) = fs::read_to_string(config_dir.join("kdeglobals")) {
+            for line in contents.lines() {
+                if let Some(scheme) = line.trim().strip_prefix("ColorScheme=") {
+                    let lower = scheme.to_ascii_lowercase();
+                    if lower.contains("dark") {
+                        return Some(true);
+                    }
+                    if lower.contains("light") {
+                        return Some(false);
+                    }
+                }
+            }
+        }
+    }
+
     None
+}
+
+/// Parses the standard terminal `COLORFGBG` variable (`fg;bg` or `fg;extra;bg`).
+/// ANSI background indices 0..=6 and 8 indicate a dark background; 7 and 9..=15
+/// indicate a light background.
+pub(super) fn detect_colorfgbg_dark_mode(value: Option<&str>) -> Option<bool> {
+    let raw = value?.trim();
+    let bg = raw.rsplit(';').next()?.trim().parse::<u8>().ok()?;
+    match bg {
+        0..=6 | 8 => Some(true),
+        7 | 9..=15 => Some(false),
+        _ => None,
+    }
 }
 
 pub(super) fn parse_word_target(input: &str) -> Result<Option<usize>, String> {

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -412,18 +412,29 @@ impl OrdetApp {
                 }
             }
 
+            while let Some(task) = self.tasks.try_recv() {
+                self.handle_task_result(task);
+                self.redraw_requested = true;
+            }
+            if self.redraw_requested {
+                continue;
+            }
+
             let (deadlines, count) = self.next_deadlines();
             self.service_due_deadlines();
             if self.redraw_requested {
                 continue;
             }
 
-            let wait = deadlines
+            let mut wait = deadlines
                 .iter()
                 .take(count)
                 .map(|at| at.saturating_duration_since(Instant::now()))
                 .min()
                 .unwrap_or(Duration::ZERO);
+            if self.tasks.has_active() {
+                wait = wait.min(Duration::from_millis(8));
+            }
 
             if event::poll(wait)? {
                 // Drain the batch before deciding to draw: a burst of keys
@@ -1524,12 +1535,18 @@ impl OrdetApp {
             }
             UiEvent::Tick => {
                 self.state.ui.local_hour = current_local_hour();
-                // The system-theme probe runs a `defaults` process on macOS;
-                // checked every ~2s rather than on every tick.
+                // The system-theme probe may spawn `defaults` (macOS) or
+                // `gsettings` (Linux); run it off the UI thread every ~2s.
                 if self.state.ui.tick_count.is_multiple_of(8)
                     && matches!(self.state.ui.theme, ThemeSelection::System)
                 {
-                    self.state.ui.system_is_dark = detect_system_dark_mode();
+                    self.tasks
+                        .spawn(Some(TaskKey::from("system-theme")), |token| {
+                            if token.is_cancelled() {
+                                return Err(TaskError::new("theme probe cancelled"));
+                            }
+                            Ok(AppMessage::SystemThemeDetected(detect_system_dark_mode()))
+                        });
                 }
                 // Transient messages fall back to the focus hint on their
                 // own; persistent ones (focus hints, live cues) never arm
@@ -2267,6 +2284,19 @@ impl OrdetApp {
     }
 
     /// Copy the selection, or the whole current line when nothing is selected.
+    /// Mirrors copied/cut text to the native OS clipboard off the UI thread
+    /// so `pbcopy` / `wl-copy` / `xclip` / `arboard` never stall keystrokes.
+    fn spawn_clipboard_write(&mut self, text: String) {
+        self.tasks
+            .spawn(Some(TaskKey::from("clipboard")), move |token| {
+                if token.is_cancelled() {
+                    return Err(TaskError::new("clipboard sync cancelled"));
+                }
+                crate::clipboard::write_system_clipboard(&text);
+                Ok(AppMessage::ClipboardSynced)
+            });
+    }
+
     /// Lands on the internal ring and the system clipboard (OSC 52 plus the
     /// platform tool) so pasting works inside Ordet and in other apps.
     fn copy_requested(&mut self) {
@@ -2283,7 +2313,7 @@ impl OrdetApp {
         }
         let chars = text.chars().count();
         self.state.clipboard.copy(&text);
-        crate::clipboard::write_system_clipboard(&text);
+        self.spawn_clipboard_write(text.clone());
         self.state
             .ui
             .pending_overlays
@@ -2317,7 +2347,7 @@ impl OrdetApp {
         }
         let chars = text.chars().count();
         self.state.clipboard.copy(&text);
-        crate::clipboard::write_system_clipboard(&text);
+        self.spawn_clipboard_write(text.clone());
         self.state
             .ui
             .pending_overlays

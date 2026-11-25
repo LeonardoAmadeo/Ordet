@@ -1185,6 +1185,7 @@ fn ctrl_v_pastes_into_prompt_and_browser_on_first_press() {
     );
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn macos_option_c_copies_the_editor_selection() {
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
@@ -3251,4 +3252,31 @@ fn a_stale_save_cannot_close_or_quit_over_newer_edits() {
     assert!(!app.state.ui.should_quit);
     assert!(app.state.ui.quit_after_save);
     assert_eq!(app.pending_after_save, CloseIntent::Exit);
+}
+
+#[test]
+fn colorfgbg_parses_dark_and_light_terminal_backgrounds() {
+    assert_eq!(super::detect_colorfgbg_dark_mode(Some("15;0")), Some(true));
+    assert_eq!(
+        super::detect_colorfgbg_dark_mode(Some("15;default;0")),
+        Some(true)
+    );
+    assert_eq!(super::detect_colorfgbg_dark_mode(Some("0;15")), Some(false));
+    assert_eq!(super::detect_colorfgbg_dark_mode(Some("0;7")), Some(false));
+    assert_eq!(super::detect_colorfgbg_dark_mode(Some("invalid")), None);
+    assert_eq!(super::detect_colorfgbg_dark_mode(None), None);
+}
+
+#[test]
+fn pasted_path_candidates_recognize_windows_drive_and_unc_paths() {
+    let drive = super::parse_pasted_path_candidates("Open C:\\Users\\writer\\draft.ord now");
+    assert!(
+        drive.iter().any(|c| c == "C:\\Users\\writer\\draft.ord"),
+        "expected drive path in candidates: {drive:?}"
+    );
+    let unc = super::parse_pasted_path_candidates("\\\\fileserver\\docs\\notes.ord");
+    assert!(
+        unc.iter().any(|c| c == "\\\\fileserver\\docs\\notes.ord"),
+        "expected UNC path in candidates: {unc:?}"
+    );
 }

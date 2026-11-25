@@ -4,7 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Low-level TUI primitives, component trait, keymap, focus, task pool, and renderer for Ordet"
+description = "Lightweight, event-driven TUI framework with coalescing ANSI diff rendering, explicit layout, keymaps, focus, and a background task pool"
+readme = "README.md"
+keywords = ["tui", "terminal", "ui", "ansi", "framework"]
+categories = ["command-line-interface", "gui"]
 
 [dependencies]
 crossterm = "0.28"

@@ -1,3 +1,6 @@
+//! Bounded persistent background [`TaskPool`] with cooperative cancellation
+//! and panic isolation.
+
 use std::collections::HashMap;
 use std::fmt;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -64,9 +67,9 @@ pub struct TaskResult<Message> {
     pub result: Result<Message, TaskError>,
 }
 
-/// Worker threads per pool: enough for the realistic mix of saves, opens,
-/// and backups while a stalled job can't starve the rest.
-const WORKERS: usize = 6;
+/// Default worker threads per pool: enough for the realistic mix of saves,
+/// opens, and backups while a stalled job can't starve the rest.
+const DEFAULT_WORKERS: usize = 6;
 
 type Job<Message> = Box<dyn FnOnce(CancelToken) -> Result<Message, TaskError> + Send>;
 
@@ -91,15 +94,20 @@ impl<Message> TaskPool<Message>
 where
     Message: Send + 'static,
 {
-    /// A small pool of persistent workers, not one thread per task: tasks
-    /// run on threads that outlive them, so warm state (loaded documents,
-    /// parsed metadata) can stay cached in thread-locals instead of being
-    /// rebuilt on every request.
+    /// Creates a pool with the default worker count (6).
     pub fn new() -> Self {
+        Self::with_workers(DEFAULT_WORKERS)
+    }
+
+    /// Creates a persistent pool with `workers` threads (clamped to at least 1).
+    /// Tasks run on threads that outlive them, so warm state can stay cached in
+    /// thread-locals instead of being rebuilt on every request.
+    pub fn with_workers(workers: usize) -> Self {
+        let workers = workers.max(1);
         let (results, receiver) = unbounded();
         let (jobs, job_receiver) =
             unbounded::<(TaskHandle, Option<TaskKey>, CancelToken, Job<Message>)>();
-        for index in 0..WORKERS {
+        for index in 0..workers {
             let jobs = job_receiver.clone();
             let results = results.clone();
             let _ = thread::Builder::new()
@@ -168,11 +176,38 @@ where
         }
     }
 
+    /// Cancels the currently active task registered under `key`, if any.
+    pub fn cancel_key(&mut self, key: &TaskKey) {
+        if let Some(handle) = self.keyed.get(key).copied() {
+            self.cancel(handle);
+        }
+    }
+
+    /// Signals cancellation to every in-flight task.
+    pub fn cancel_all(&mut self) {
+        for flag in self.active.values() {
+            flag.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Number of tasks currently in flight or awaiting `try_recv`.
+    pub fn active_count(&self) -> usize {
+        self.active.len()
+    }
+
     /// Whether any spawned task is still in flight or has an unread
     /// result. The event loop polls on a short cadence while true, so
     /// landings are handled in milliseconds instead of at the next tick.
     pub fn has_active(&self) -> bool {
         !self.active.is_empty()
+    }
+}
+
+impl<Message> Drop for TaskPool<Message> {
+    fn drop(&mut self) {
+        for flag in self.active.values() {
+            flag.store(true, Ordering::SeqCst);
+        }
     }
 }
 
@@ -213,12 +248,14 @@ mod tests {
     fn has_active_tracks_in_flight_tasks() {
         let mut pool = TaskPool::<usize>::new();
         assert!(!pool.has_active());
+        assert_eq!(pool.active_count(), 0);
 
         pool.spawn(None, |_| {
             thread::sleep(Duration::from_millis(30));
             Ok(1usize)
         });
         assert!(pool.has_active());
+        assert_eq!(pool.active_count(), 1);
 
         let deadline = Instant::now() + Duration::from_secs(1);
         loop {
@@ -229,6 +266,7 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         assert!(!pool.has_active());
+        assert_eq!(pool.active_count(), 0);
     }
 
     #[test]

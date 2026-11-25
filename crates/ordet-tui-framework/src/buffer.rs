@@ -1,3 +1,6 @@
+//! Offscreen cell grid ([`Buffer`]), interned graphemes ([`Symbol`]), and
+//! zero-allocation frame diffing.
+
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -5,7 +8,7 @@ use std::rc::Rc;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-use crate::{Point, Rect, Style};
+use crate::{Line, Point, Rect, Span, Style};
 
 thread_local! {
     /// Interner for cell symbols. Rendering is single-threaded, so a
@@ -53,6 +56,18 @@ impl Symbol {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Display width in terminal columns (1 for ASCII, Unicode width otherwise).
+    pub fn display_width(&self) -> u16 {
+        let s = self.as_str();
+        if s.len() == 1 && s.as_bytes()[0] < 128 {
+            1
+        } else if s.is_empty() {
+            0
+        } else {
+            UnicodeWidthStr::width(s).max(1) as u16
+        }
     }
 
     /// Symbol for one ASCII byte. Table-backed: no hashing, no allocation.
@@ -128,6 +143,8 @@ impl Cell {
     }
 }
 
+/// Offscreen 2D cell grid supporting grapheme-aware text writing, wide
+/// character continuation cleanup, rectangle clipping, and streaming diffing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Buffer {
     area: Rect,
@@ -162,6 +179,43 @@ impl Buffer {
                 self.set_cell(Point::new(x, y), Cell::blank(style));
             }
         }
+    }
+
+    /// Writes a styled [`Span`] starting at `point`, clipped to `max_width`.
+    pub fn write_span(
+        &mut self,
+        point: Point,
+        span: &Span,
+        base_style: Style,
+        max_width: u16,
+    ) -> u16 {
+        self.write_text(
+            point,
+            &span.content,
+            base_style.patch(span.style),
+            max_width,
+        )
+    }
+
+    /// Writes a [`Line`] starting at `point`, clipped to `max_width`.
+    pub fn write_line(
+        &mut self,
+        point: Point,
+        line: &Line,
+        base_style: Style,
+        max_width: u16,
+    ) -> u16 {
+        let mut cursor_x = point.x;
+        let limit = point.x.saturating_add(max_width).min(self.area.right());
+        for span in &line.spans {
+            if cursor_x >= limit {
+                break;
+            }
+            let available = limit.saturating_sub(cursor_x);
+            let used = self.write_span(Point::new(cursor_x, point.y), span, base_style, available);
+            cursor_x = cursor_x.saturating_add(used);
+        }
+        cursor_x.saturating_sub(point.x)
     }
 
     pub fn write_text(&mut self, point: Point, text: &str, style: Style, max_width: u16) -> u16 {
@@ -224,6 +278,23 @@ impl Buffer {
         cursor_x.saturating_sub(point.x)
     }
 
+    /// Returns the rendered text of row `y` (skipping continuation cells),
+    /// useful for debugging and snapshot assertions in tests.
+    pub fn row_text(&self, y: u16) -> String {
+        if y < self.area.y || y >= self.area.bottom() {
+            return String::new();
+        }
+        let row_offset = usize::from(y - self.area.y) * usize::from(self.area.width);
+        let row_slice = &self.cells[row_offset..row_offset + usize::from(self.area.width)];
+        let mut out = String::with_capacity(usize::from(self.area.width));
+        for cell in row_slice {
+            if !cell.continuation {
+                out.push_str(cell.symbol.as_str());
+            }
+        }
+        out
+    }
+
     pub fn diff(&self, previous: &Self) -> Vec<(Point, &Cell)> {
         self.cells
             .iter()
@@ -270,10 +341,50 @@ impl Buffer {
         self.cells.get(index)
     }
 
-    fn set_cell(&mut self, point: Point, cell: Cell) {
-        if let Some(index) = self.index_of(point) {
-            self.cells[index] = cell;
+    pub fn cell_mut(&mut self, point: Point) -> Option<&mut Cell> {
+        let index = self.index_of(point)?;
+        self.cells.get_mut(index)
+    }
+
+    /// Writes a cell at `point`, maintaining wide-character invariants:
+    /// - overwriting a continuation cell clears its wide leader to the left;
+    /// - overwriting a wide leader with a non-continuation cell clears any
+    ///   trailing continuation cells to the right.
+    pub fn set_cell(&mut self, point: Point, cell: Cell) {
+        let Some(index) = self.index_of(point) else {
+            return;
+        };
+        let row_start = usize::from(point.y - self.area.y) * usize::from(self.area.width);
+        let row_end = row_start + usize::from(self.area.width);
+
+        // If we are overwriting a continuation cell with a normal cell, clear
+        // the wide leader that owned it so the terminal never renders a split glyph.
+        if !cell.continuation && self.cells[index].continuation {
+            let mut left = index;
+            while left > row_start {
+                left -= 1;
+                let was_cont = self.cells[left].continuation;
+                let style = self.cells[left].style;
+                self.cells[left] = Cell::blank(style);
+                if !was_cont {
+                    break;
+                }
+            }
         }
+
+        // If the previous cell was a wide leader (followed by continuation cells)
+        // and we are writing a normal cell, clear any orphaned continuation cells
+        // to the right.
+        if !cell.continuation {
+            let mut right = index + 1;
+            while right < row_end && self.cells[right].continuation {
+                let style = self.cells[right].style;
+                self.cells[right] = Cell::blank(style);
+                right += 1;
+            }
+        }
+
+        self.cells[index] = cell;
     }
 
     fn index_of(&self, point: Point) -> Option<usize> {
@@ -286,13 +397,7 @@ impl Buffer {
     }
 
     fn clip(&self, rect: Rect) -> Rect {
-        let area_right = self.area.right();
-        let area_bottom = self.area.bottom();
-        let x = rect.x.max(self.area.x).min(area_right);
-        let y = rect.y.max(self.area.y).min(area_bottom);
-        let right = rect.right().max(self.area.x).min(area_right);
-        let bottom = rect.bottom().max(self.area.y).min(area_bottom);
-        Rect::new(x, y, right.saturating_sub(x), bottom.saturating_sub(y))
+        self.area.intersect(rect)
     }
 }
 
@@ -328,6 +433,26 @@ mod tests {
             Symbol::intern("界")
         );
         assert!(buffer.cell(Point::new(1, 0)).unwrap().continuation);
+    }
+
+    #[test]
+    fn overwriting_wide_leader_clears_trailing_continuation() {
+        let mut buffer = Buffer::new(Rect::new(0, 0, 4, 1));
+        buffer.write_text(Point::new(0, 0), "界", Style::default(), 4);
+        buffer.write_text(Point::new(0, 0), "a", Style::default(), 4);
+        assert_eq!(buffer.cell(Point::new(0, 0)).unwrap().symbol.as_str(), "a");
+        assert!(!buffer.cell(Point::new(1, 0)).unwrap().continuation);
+        assert_eq!(buffer.cell(Point::new(1, 0)).unwrap().symbol.as_str(), " ");
+    }
+
+    #[test]
+    fn overwriting_wide_continuation_clears_leading_cell() {
+        let mut buffer = Buffer::new(Rect::new(0, 0, 4, 1));
+        buffer.write_text(Point::new(0, 0), "界", Style::default(), 4);
+        buffer.write_text(Point::new(1, 0), "b", Style::default(), 4);
+        assert_eq!(buffer.cell(Point::new(0, 0)).unwrap().symbol.as_str(), " ");
+        assert_eq!(buffer.cell(Point::new(1, 0)).unwrap().symbol.as_str(), "b");
+        assert!(!buffer.cell(Point::new(1, 0)).unwrap().continuation);
     }
 
     #[test]

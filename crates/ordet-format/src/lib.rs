@@ -180,7 +180,7 @@ pub fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> 
         if let Ok(metadata) = fs::metadata(path) {
             let _ = fs::set_permissions(&temporary, metadata.permissions());
         }
-        fs::rename(&temporary, path)?;
+        rename_replacing(&temporary, path)?;
         Ok(())
     })();
 
@@ -188,6 +188,33 @@ pub fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> 
         let _ = fs::remove_file(&temporary);
     }
     result
+}
+
+/// Atomically replaces `to` with `from`. On Windows, briefly retries on
+/// `PermissionDenied` in case an antivirus scanner or file indexer holds a
+/// transient handle on the target file.
+fn rename_replacing(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        for attempt in 0..5u8 {
+            match fs::rename(from, to) {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::PermissionDenied && attempt < 4 =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        10 * u64::from(attempt + 1),
+                    ));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        fs::rename(from, to)
+    }
+    #[cfg(not(windows))]
+    {
+        fs::rename(from, to)
+    }
 }
 
 pub fn fallback_title_from_path(path: &Path) -> String {

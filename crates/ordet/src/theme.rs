@@ -617,12 +617,7 @@ fn color_distance(lhs: Color, rhs: Color) -> i32 {
 }
 
 fn color_components(color: Color) -> (u8, u8, u8) {
-    match color {
-        Color::Black => (0, 0, 0),
-        Color::White => (255, 255, 255),
-        Color::Rgb(r, g, b) => (r, g, b),
-        Color::Reset => (0, 0, 0),
-    }
+    color.to_rgb().unwrap_or((0, 0, 0))
 }
 
 fn normalize_theme_query(input: &str) -> String {

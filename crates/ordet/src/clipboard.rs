@@ -90,14 +90,22 @@ pub fn write_system_clipboard(text: &str) {
 
     #[cfg(not(target_os = "windows"))]
     if cfg!(target_os = "macos") {
-        pipe_to_tool("pbcopy", &[], text);
+        let _ = pipe_to_tool("pbcopy", &[], text);
     } else {
-        // Wayland first where it exists, then the X11 tools.
-        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-            pipe_to_tool("wl-copy", &[], text);
+        // Wayland first where it exists, then X11 tools, then WSL bridge.
+        // Stop at the first tool that succeeds instead of spawning all of them.
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() && pipe_to_tool("wl-copy", &[], text) {
+            return;
         }
-        pipe_to_tool("xclip", &["-selection", "clipboard"], text);
-        pipe_to_tool("xsel", &["--clipboard", "--input"], text);
+        if pipe_to_tool("xclip", &["-in", "-selection", "clipboard"], text) {
+            return;
+        }
+        if pipe_to_tool("xsel", &["--clipboard", "--input"], text) {
+            return;
+        }
+        if std::env::var_os("WSL_DISTRO_NAME").is_some() {
+            let _ = pipe_to_tool("clip.exe", &[], text);
+        }
     }
 }
 
@@ -118,9 +126,18 @@ pub fn read_system_clipboard() -> Option<String> {
         } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {
             run_tool("wl-paste", &["--no-newline"])
                 .or_else(|| run_tool("xclip", &["-selection", "clipboard", "-o"]))
+                .or_else(|| run_tool("xsel", &["--clipboard", "--output"]))
         } else {
             run_tool("xclip", &["-selection", "clipboard", "-o"])
                 .or_else(|| run_tool("xsel", &["--clipboard", "--output"]))
+                .or_else(|| {
+                    std::env::var_os("WSL_DISTRO_NAME").and_then(|_| {
+                        run_tool(
+                            "powershell.exe",
+                            &["-NoProfile", "-Command", "Get-Clipboard"],
+                        )
+                    })
+                })
         }?;
         let text = String::from_utf8_lossy(&output).into_owned();
         if text.is_empty() {
@@ -132,7 +149,7 @@ pub fn read_system_clipboard() -> Option<String> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn pipe_to_tool(tool: &str, args: &[&str], text: &str) {
+fn pipe_to_tool(tool: &str, args: &[&str], text: &str) -> bool {
     let Ok(mut child) = Command::new(tool)
         .args(args)
         .stdin(Stdio::piped())
@@ -140,15 +157,19 @@ fn pipe_to_tool(tool: &str, args: &[&str], text: &str) {
         .stderr(Stdio::null())
         .spawn()
     else {
-        return;
+        return false;
     };
-    if let Some(stdin) = child.stdin.take() {
-        let mut stdin = stdin;
-        let _ = stdin.write_all(text.as_bytes());
+    if let Some(mut stdin) = child.stdin.take() {
+        if stdin.write_all(text.as_bytes()).is_err() {
+            drop(stdin);
+            let _ = child.wait();
+            return false;
+        }
         // Dropping closes stdin so the tool finishes; waiting reaps it.
         drop(stdin);
-        let _ = child.wait();
+        return child.wait().map(|status| status.success()).unwrap_or(false);
     }
+    false
 }
 
 #[cfg(not(target_os = "windows"))]

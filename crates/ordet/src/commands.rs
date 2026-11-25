@@ -657,6 +657,8 @@ pub enum AppMessage {
     },
     RecoveryCompleted,
     HistoryPersisted,
+    ClipboardSynced,
+    SystemThemeDetected(Option<bool>),
     ReadFileCompleted {
         draft_id: DraftId,
         revision: u64,

@@ -1,8 +1,12 @@
+//! Key chord representation and conflict-checked [`Keymap`].
+
 use std::collections::HashMap;
+use std::fmt;
 use std::hash::Hash;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+/// A normalized key combination (code + modifier flags).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct KeyChord {
     pub code: KeyCode,
@@ -21,6 +25,21 @@ impl KeyChord {
     pub fn ctrl(ch: char) -> Self {
         Self::new(KeyCode::Char(ch), KeyModifiers::CONTROL)
     }
+
+    pub fn alt(ch: char) -> Self {
+        Self::new(KeyCode::Char(ch), KeyModifiers::ALT)
+    }
+
+    pub fn shift(code: KeyCode) -> Self {
+        Self::new(code, KeyModifiers::SHIFT)
+    }
+
+    pub fn ctrl_shift(ch: char) -> Self {
+        Self::new(
+            KeyCode::Char(ch),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        )
+    }
 }
 
 impl From<KeyEvent> for KeyChord {
@@ -32,6 +51,28 @@ impl From<KeyEvent> for KeyChord {
     }
 }
 
+/// Error returned by [`Keymap::try_bind`] when a chord is already bound to a
+/// different command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyBindConflict<Command> {
+    pub chord: KeyChord,
+    pub existing: Command,
+    pub attempted: Command,
+}
+
+impl<Command: fmt::Debug> fmt::Display for KeyBindConflict<Command> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "conflicting key bindings for {:?}: already bound to {:?}, cannot bind {:?}",
+            self.chord, self.existing, self.attempted
+        )
+    }
+}
+
+impl<Command: fmt::Debug> std::error::Error for KeyBindConflict<Command> {}
+
+/// Maps [`KeyChord`]s to typed application commands.
 #[derive(Clone, Debug, Default)]
 pub struct Keymap<Command> {
     bindings: HashMap<KeyChord, Command>,
@@ -52,6 +93,7 @@ where
     /// Rebinding the same chord to the same command is a no-op. Rebinding it to a
     /// *different* command panics instead of silently dropping the earlier binding,
     /// because a shadowed binding is otherwise impossible to notice.
+    /// For a non-panicking version, use [`Self::try_bind`].
     pub fn bind(&mut self, chord: KeyChord, command: Command) {
         if let Some(previous) = self.bindings.get(&chord) {
             assert!(
@@ -63,8 +105,37 @@ where
         self.bindings.insert(chord, command);
     }
 
+    /// Non-panicking version of [`Self::bind`].
+    pub fn try_bind(
+        &mut self,
+        chord: KeyChord,
+        command: Command,
+    ) -> Result<(), KeyBindConflict<Command>> {
+        if let Some(previous) = self.bindings.get(&chord) {
+            if previous == &command {
+                return Ok(());
+            }
+            return Err(KeyBindConflict {
+                chord,
+                existing: previous.clone(),
+                attempted: command,
+            });
+        }
+        self.bindings.insert(chord, command);
+        Ok(())
+    }
+
+    /// Removes the binding for `chord`, returning the previously bound command if any.
+    pub fn unbind(&mut self, chord: &KeyChord) -> Option<Command> {
+        self.bindings.remove(chord)
+    }
+
     pub fn resolve(&self, key: KeyEvent) -> Option<Command> {
         self.bindings.get(&KeyChord::from(key)).cloned()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&KeyChord, &Command)> {
+        self.bindings.iter()
     }
 
     pub fn len(&self) -> usize {
@@ -113,5 +184,14 @@ mod tests {
         let mut keymap = Keymap::new();
         keymap.bind(KeyChord::ctrl('s'), Command::Save);
         keymap.bind(KeyChord::ctrl('s'), Command::Quit);
+    }
+
+    #[test]
+    fn try_bind_and_unbind_handle_conflicts_without_panicking() {
+        let mut keymap = Keymap::new();
+        assert!(keymap.try_bind(KeyChord::alt('q'), Command::Quit).is_ok());
+        assert!(keymap.try_bind(KeyChord::alt('q'), Command::Save).is_err());
+        assert_eq!(keymap.unbind(&KeyChord::alt('q')), Some(Command::Quit));
+        assert!(keymap.is_empty());
     }
 }

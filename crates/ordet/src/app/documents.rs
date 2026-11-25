@@ -369,6 +369,10 @@ impl OrdetApp {
             }
             AppMessage::RecoveryCompleted => {}
             AppMessage::HistoryPersisted => {}
+            AppMessage::ClipboardSynced => {}
+            AppMessage::SystemThemeDetected(is_dark) => {
+                self.state.ui.system_is_dark = is_dark;
+            }
             AppMessage::WriteBlockCompleted {
                 path,
                 chars,

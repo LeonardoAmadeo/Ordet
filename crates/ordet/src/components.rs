@@ -821,12 +821,7 @@ fn blend_color(start: Color, end: Color, amount: f32) -> Color {
 }
 
 fn color_components(color: Color) -> (u8, u8, u8) {
-    match color {
-        Color::Black => (0, 0, 0),
-        Color::White => (255, 255, 255),
-        Color::Rgb(r, g, b) => (r, g, b),
-        Color::Reset => (255, 255, 255),
-    }
+    color.to_rgb().unwrap_or((255, 255, 255))
 }
 
 fn fit_text_to_width(text: &str, max_width: usize) -> String {

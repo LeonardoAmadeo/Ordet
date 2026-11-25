@@ -535,9 +535,10 @@ impl OrdetApp {
     }
 
     pub(super) fn handle_key_event(&mut self, key: KeyEvent) {
-        // Terminals without "Option as Meta" deliver Option chords as the
-        // literal glyph. Retype them before anything else sees the glyph, or
-        // an editing shortcut silently becomes document text.
+        // On macOS, terminals without "Option as Meta" deliver Option chords as
+        // the literal glyph (e.g. Option+C -> ç). Retype them only on macOS so
+        // Linux and Windows European keyboards can type å, ç, ß, µ normally.
+        #[cfg(target_os = "macos")]
         let key = normalize_macos_option_key(key);
         if self.state.ui.about_open {
             if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' ')) {
