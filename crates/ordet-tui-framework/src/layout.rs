@@ -70,8 +70,9 @@ pub fn split(area: Rect, direction: Direction, constraints: &[Constraint]) -> Ve
             let mut last_fill_idx = None;
             for (index, constraint) in constraints.iter().enumerate() {
                 if let Constraint::Fill(weight) = *constraint {
-                    let share =
-                        (u32::from(remaining) * u32::from(weight.max(1)) / fill_total) as u16;
+                    let share = (u32::from(remaining) * u32::from(weight.max(1)))
+                        .checked_div(fill_total)
+                        .unwrap_or(0) as u16;
                     lengths[index] = lengths[index].saturating_add(share);
                     distributed = distributed.saturating_add(share);
                     last_fill_idx = Some(index);

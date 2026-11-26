@@ -12,7 +12,6 @@ version = "0.1.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/LeonardoAmadeo/ordet"
-description = "Terminal-first word processor with rope-backed editing and a modern event-driven core"
 
 [profile.release]
 opt-level = 3
