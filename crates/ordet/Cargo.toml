@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 base64 = "0.22"
-crossterm = "0.28"
+crossterm = "0.29"
 dirs = "5"
 dunce = "1"
 ordet-format = { version = "0.1.1", path = "../ordet-format" }
