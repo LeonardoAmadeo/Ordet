@@ -10,7 +10,7 @@ keywords = ["tui", "terminal", "ui", "ansi", "framework"]
 categories = ["command-line-interface", "gui"]
 
 [dependencies]
-crossterm = "0.28"
+crossterm = "0.29"
 unicode-segmentation = "1.12"
 unicode-width = "0.2"
 crossbeam-channel = "0.5"
