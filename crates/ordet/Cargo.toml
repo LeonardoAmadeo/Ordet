@@ -14,7 +14,7 @@ name = "ordet"
 path = "src/main.rs"
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 crossterm = "0.28"
 dirs = "5"
 dunce = "1"
