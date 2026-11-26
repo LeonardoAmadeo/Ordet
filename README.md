@@ -8,11 +8,13 @@ It is built for writing long-form prose in the terminal: paragraph alignment, in
 
 ## Install
 
-Ordet requires a stable [Rust toolchain](https://rustup.rs/) and a UTF-8 terminal. On Linux, `wl-copy`/`wl-paste` (Wayland) or `xclip`/`xsel` (X11) are used for the system clipboard when available.
+Download a prebuilt binary for macOS, Linux, or Windows from [GitHub Releases](https://github.com/LeonardoAmadeo/Ordet/releases/latest), or install with a stable [Rust toolchain](https://rustup.rs/):
 
 ```sh
-cargo install ordet
+cargo install --git https://github.com/LeonardoAmadeo/Ordet ordet
 ```
+
+On Linux, `wl-copy`/`wl-paste` (Wayland) or `xclip`/`xsel` (X11) are used for the system clipboard when available.
 
 Or build from source:
 
